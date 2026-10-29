@@ -102,7 +102,12 @@ export type AuditEntry = z.infer<typeof AuditEntry>;
 export const NodeEvent = z.object({ node_invoice_state: z.string(), at: unixSecs });
 export type NodeEvent = z.infer<typeof NodeEvent>;
 
-export const EscrowEvents = z.object({ audit: z.array(AuditEntry), node_events: z.array(NodeEvent) });
+export const EscrowEvents = z.object({
+  audit: z.array(AuditEntry),
+  node_events: z.array(NodeEvent),
+  /** While a dispute waits for the other side to answer: when an arbiter may decide. Otherwise null. */
+  decide_after: unixSecs.nullable().default(null),
+});
 export type EscrowEvents = z.infer<typeof EscrowEvents>;
 
 export const Invoice = z.object({ payment_request: z.string().min(1), expires_at: unixSecs.nullable() });

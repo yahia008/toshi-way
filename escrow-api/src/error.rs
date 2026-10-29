@@ -65,6 +65,11 @@ impl From<ServiceError> for ApiError {
                 Self::new(StatusCode::UNPROCESSABLE_ENTITY, "wrong_preimage", "preimage does not match the payment hash")
             }
             E::TooLate => Self::new(StatusCode::CONFLICT, "too_late", "the settle-by deadline has passed"),
+            E::TooEarly(at) => Self::new(
+                StatusCode::CONFLICT,
+                "response_window",
+                format!("the other side has until {at} (unix time) to respond to the dispute; you can decide then, or as soon as they add their side"),
+            ),
             E::HashInUse => Self::new(StatusCode::CONFLICT, "hash_in_use", "payment hash is already used by another escrow"),
             E::Adapter(AdapterError::Unavailable(_)) => {
                 Self::new(StatusCode::SERVICE_UNAVAILABLE, "node_unavailable", "the Lightning node is unavailable, try again")

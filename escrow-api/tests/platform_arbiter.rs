@@ -279,6 +279,9 @@ async fn the_platform_account_decides_a_dispute_like_any_arbiter() {
     let (s, v) = app.call(Method::POST, &format!("/api/v1/escrows/{id}/cancel"), Some(OPERATOR_TOKEN), None).await;
     assert_eq!((s, code(&v)), (StatusCode::FORBIDDEN, Some("forbidden")), "{v}");
 
+    // The buyer gets their window to answer first.
+    app.clock.fetch_add(901, Ordering::SeqCst);
+
     let body = json!({"decision": "release", "preimage": hex::encode(p.as_bytes()), "note": "proof of delivery accepted"});
     let (s, v) = app.call(Method::POST, &format!("/api/v1/escrows/{id}/arbitration/decide"), Some(&platform.token), Some(body)).await;
     assert_eq!((s, v["state"].as_str()), (StatusCode::OK, Some("SETTLED")), "{v}");

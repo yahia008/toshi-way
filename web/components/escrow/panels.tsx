@@ -11,7 +11,7 @@ import { buildReleaseLink, generateSecret, hashSecret, loadSecret, saveSecret } 
 import { getWebLN, payWithWebLN } from "@/lib/webln";
 import { Button, Card, ConfirmButton, CopyButton, CopyField, Countdown, Field, inputClass, Notice, Spinner } from "../ui";
 import { useDefaultArbiter, useStoredSecret } from "./hooks";
-import { EvidenceList, NotesBox } from "./Notes";
+import { EvidenceList, NotesBox, ResponseWindow, useResponseWindow } from "./Notes";
 import { NairaPay, PayChoice } from "./NairaPay";
 import { Scanner } from "./Scanner";
 
@@ -723,6 +723,8 @@ function ArbiterPanel({ escrow, actions, events }: { escrow: Escrow; actions: Ac
   // The decrypted secret lives in memory only, for as long as this panel does.
   const [secret, setSecret] = useState<string | null>(null);
   const [note, setNote] = useState("");
+  // While the other side still has time to answer the dispute, an arbiter cannot decide.
+  const waiting = useResponseWindow(events) !== null;
 
   /** Open the sealed secret with this device's private key and check it matches the payment hash. */
   async function verify(): Promise<string | null> {
@@ -796,6 +798,7 @@ function ArbiterPanel({ escrow, actions, events }: { escrow: Escrow; actions: Ac
           </Notice>
           <Reported escrow={escrow} events={events} />
           <EvidenceList escrow={escrow} events={events} title="Delivery and evidence from both sides" />
+          <ResponseWindow escrow={escrow} events={events} />
           <Deadline escrow={escrow} />
           <Field label="Your note (shown in the history)" hint="Optional. Why you decided this way.">
             <textarea
@@ -811,6 +814,7 @@ function ArbiterPanel({ escrow, actions, events }: { escrow: Escrow; actions: Ac
             <ConfirmButton
               confirmText={`Pay the seller ${formatSats(escrow.amount_sats)}? This can't be undone.`}
               confirmLabel="Yes, pay the seller"
+              disabled={waiting}
               busy={actions.busy === "decide"}
               onConfirm={async () => {
                 const opened = secret ?? (await verify());
@@ -822,6 +826,7 @@ function ArbiterPanel({ escrow, actions, events }: { escrow: Escrow; actions: Ac
             <ConfirmButton
               confirmText={`Refund the buyer ${formatSats(escrow.amount_sats)}? The seller will not be paid.`}
               confirmLabel="Yes, refund the buyer"
+              disabled={waiting}
               busy={actions.busy === "decide"}
               onConfirm={() => actions.run("decide", () => api.decide(escrow.id, "refund", note))}
             >

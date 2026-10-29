@@ -43,6 +43,7 @@ Everything runs on a local **regtest** network with a stand-in wallet; no real m
 - [`docs/demo.md`](docs/demo.md): the demo script, with talk track, limits and troubleshooting
 - [`docs/api.md`](docs/api.md): for businesses: take payments from your own site (API keys, checkout link, webhooks)
 - [`sdk/js/README.md`](sdk/js/README.md): the JavaScript client
+- [`docs/architecture.md`](docs/architecture.md): how the system is put together: crates, state machine, trust model, background tasks, web app
 - [`docs/project.md`](docs/project.md): product spec, trust model, API and status
 - [`docs/flow.md`](docs/flow.md): a log of every decision, measurement and problem, in order
 - [`docs/gist.md`](docs/gist.md): the original PRD

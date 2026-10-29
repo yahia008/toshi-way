@@ -392,6 +392,13 @@ async function arbitratedLocked(browser: Browser, description: string) {
   return { arbiter, seller, buyer, id };
 }
 
+/** Say your side. For the party a dispute was opened against, this ends the arbiter's wait at once. */
+async function addEvidence(party: Party, text: string) {
+  await party.page.getByLabel("Your note").fill(text);
+  await party.page.getByRole("button", { name: "Add evidence" }).click();
+  await expect(party.page.getByText(text).first()).toBeVisible();
+}
+
 async function openDispute(party: Party, reason: string) {
   await party.page.getByRole("button", { name: "Open a dispute…" }).click();
   await party.page.getByLabel("What went wrong?").fill(reason);
@@ -410,6 +417,17 @@ test("arbitration: the arbiter releases a disputed escrow to the seller, and the
   // The operator can no longer cancel it over the arbiter's head; the buyer and seller cannot decide.
   await expect(arbiter.page.getByText("A dispute is waiting for your decision.")).toBeVisible();
   await expect(seller.page.getByRole("button", { name: "Release to the seller" })).toHaveCount(0);
+
+  // The buyer has not answered yet, so the arbiter has to wait, and the buyer is told how to be heard.
+  await expect(arbiter.page.getByText("The other side is still within their time to answer.")).toBeVisible();
+  await expect(arbiter.page.getByRole("button", { name: "Release to the seller" })).toBeDisabled();
+  await expect(buyer.page.getByText("A dispute was opened against you.")).toBeVisible();
+  await expect(seller.page.getByText("The other side has time to answer your dispute.")).toBeVisible();
+
+  // The moment the buyer adds their side the wait is over.
+  await addEvidence(buyer, "I have not received it.");
+  await expect(arbiter.page.getByText("The other side is still within their time to answer.")).toHaveCount(0);
+  await expect(arbiter.page.getByRole("button", { name: "Release to the seller" })).toBeEnabled();
 
   await arbiter.page.getByLabel("Your note").fill("Delivery photo is genuine.");
   await arbiter.page.getByRole("button", { name: "Release to the seller" }).click();
@@ -523,6 +541,7 @@ test("platform arbiter: a seller who names none gets the platform's, and it deci
   // The buyer has the goods but will not release; the seller disputes and the platform decides.
   await openDispute(seller, "The buyer has the parcel and will not release.");
   await expect(arbiter.getByText("A dispute is waiting for your decision.")).toBeVisible();
+  await addEvidence(buyer, "I have not received it.");
   await arbiter.getByLabel("Your note").fill("Proof of delivery accepted.");
   await arbiter.getByRole("button", { name: "Release to the seller" }).click();
   await arbiter.getByRole("button", { name: "Yes, pay the seller" }).click();
@@ -534,6 +553,10 @@ test("arbitration: the arbiter refunds a disputed escrow to the buyer", async ({
   const { arbiter, seller, buyer } = await arbitratedLocked(browser, "e2e arbiter refund");
   await openDispute(buyer, "Nothing arrived.");
   for (const p of [seller.page, buyer.page, arbiter.page]) await expect(stateBadge(p, "Disputed")).toBeVisible();
+
+  // The seller answers, so the arbiter need not wait out the window.
+  await addEvidence(seller, "Courier receipt NG123.");
+  await expect(arbiter.page.getByRole("button", { name: "Refund the buyer" })).toBeEnabled();
 
   await arbiter.page.getByLabel("Your note").fill("No proof of delivery.");
   await arbiter.page.getByRole("button", { name: "Refund the buyer" }).click();
