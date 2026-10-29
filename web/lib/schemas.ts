@@ -182,6 +182,10 @@ export type NodeForm = z.infer<typeof NodeForm>;
 export const ArbiterKey = z.object({ public_key: z.string().nullable(), fingerprint: z.string().nullable() });
 export type ArbiterKey = z.infer<typeof ArbiterKey>;
 
+/** The platform's own arbiter, used when a seller names none. `id` is null when the server has none. */
+export const DefaultArbiter = z.object({ id: z.string().nullable(), fingerprint: z.string().nullable() });
+export type DefaultArbiter = z.infer<typeof DefaultArbiter>;
+
 /** What an arbiter fetches to judge: the sealed secret and the hash it must match. */
 export const Arbitration = z.object({
   sealed_secret: z.string().min(1),
@@ -232,6 +236,8 @@ export const NewEscrowForm = z
   .object({
     /** Optional: someone both sides trust to decide a dispute. */
     arbiter_id: z.string().trim().default(""),
+    /** Decline the platform's arbiter (only matters when no `arbiter_id` is given). */
+    no_arbiter: z.boolean().default(false),
     /** Optional: also show the amount in this currency (display only). Empty means none. */
     fiat_currency: z.string().trim().default(""),
     /** Optional: leave empty for an open offer that the first user to accept becomes the buyer of. */
@@ -259,14 +265,23 @@ export const NewEscrowForm = z
       });
       return z.NEVER;
     }
-    return {
+    const out: {
+      buyer_id?: string;
+      arbiter_id?: string;
+      no_arbiter?: boolean;
+      fiat_currency?: string;
+      amount_sats: number;
+      description: string;
+      hold_secs: number;
+    } = {
       ...(f.buyer_id ? { buyer_id: f.buyer_id } : {}),
-      ...(f.arbiter_id ? { arbiter_id: f.arbiter_id } : {}),
+      ...(f.arbiter_id ? { arbiter_id: f.arbiter_id } : f.no_arbiter ? { no_arbiter: true } : {}),
       ...(f.fiat_currency ? { fiat_currency: f.fiat_currency } : {}),
       amount_sats: f.amount_sats,
       description: f.description,
       hold_secs,
     };
+    return out;
   });
 export type NewEscrowRequest = z.output<typeof NewEscrowForm>;
 

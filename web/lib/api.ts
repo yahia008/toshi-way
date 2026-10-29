@@ -14,6 +14,7 @@ import {
   WebhookList,
   WebhookTestResult,
   ArbiterKey,
+  DefaultArbiter,
   Arbitration,
   Me,
   RateQuote,
@@ -159,6 +160,8 @@ export const api = {
 
   /** The current price of one bitcoin in `currency`, to preview a value before creating. */
   rate: (currency: string) => request("GET", `/api/v1/rates/${encodeURIComponent(currency)}`, RateQuote),
+
+  defaultArbiter: () => request("GET", "/api/v1/arbiter/default", DefaultArbiter),
 
   arbiterKey: () => request("GET", "/api/v1/me/arbiter-key", ArbiterKey),
 

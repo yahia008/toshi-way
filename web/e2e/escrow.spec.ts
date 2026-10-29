@@ -468,6 +468,68 @@ test("evidence: the seller marks delivery, both sides add evidence, and the arbi
   await expect(arbiter.page.getByText("Evidence added", { exact: true }).first()).toBeVisible();
 });
 
+test("platform arbiter: a seller who names none gets the platform's, and it decides the dispute", async ({ browser }) => {
+  // Needs a server started with PLATFORM_ARBITER_ID set to the seeded arbiter, which changes every
+  // escrow's flow, so it is skipped on the usual server:
+  //   PLATFORM_ARBITER_ID=$(jq -r .arbiter.id .demo/accounts.json) ./scripts/demo-env.sh up
+  let cast: { arbiter: { id: string; token: string; fingerprint: string } } | null = null;
+  let backup = "";
+  try {
+    cast = JSON.parse(readFileSync(resolve(REPO, ".demo/accounts.json"), "utf8"));
+    backup = readFileSync(resolve(REPO, ".demo/arbiter-key.json"), "utf8");
+  } catch {
+    // no seeded cast
+  }
+  test.skip(!cast, "needs the seeded demo cast (.demo/accounts.json)");
+  const base = process.env.WEB_URL ?? "http://localhost:3001";
+  const def = await (await fetch(`${base}/api/v1/arbiter/default`, { headers: { authorization: `Bearer ${cast!.arbiter.token}` } })).json();
+  test.skip(def.id !== cast!.arbiter.id, "the server has no platform arbiter set to the seeded arbiter");
+
+  // The platform's arbiter holds its key in a browser, restored from the prepared backup.
+  const context = await browser.newContext();
+  const arbiter = await context.newPage();
+  await arbiter.goto("/");
+  await importToken(arbiter, cast!.arbiter.token);
+  await arbiter.goto("/arbiter");
+  await arbiter.getByLabel("Restore from a backup").fill(backup);
+  await arbiter.getByRole("button", { name: "Restore", exact: true }).click();
+  await expect(arbiter.getByText("The private key is on this device.")).toBeVisible();
+
+  const seller = await newParty(browser);
+  const buyer = await newParty(browser);
+
+  // The form offers the platform's arbiter, selected, with its key fingerprint, and nothing was typed.
+  await seller.page.goto("/escrows/new");
+  await seller.page.getByLabel("Description").fill("e2e platform arbiter");
+  await seller.page.getByRole("button", { name: "Continue" }).click();
+  await expect(seller.page.getByRole("radio", { name: /The platform's arbiter/ })).toHaveAttribute("aria-checked", "true");
+  await expect(seller.page.getByText(cast!.arbiter.fingerprint).first()).toBeVisible();
+  await seller.page.getByLabel("Buyer's user id").fill(buyer.id);
+  await seller.page.getByLabel("Amount (sats)").fill("1000");
+  await seller.page.getByLabel("Hold time amount").fill("30");
+  await seller.page.getByLabel("Hold time unit").selectOption("minutes");
+  await seller.page.getByRole("button", { name: "Create escrow" }).click();
+  await seller.page.waitForURL(/\/escrows\/[0-9a-f-]{36}$/);
+  const id = seller.page.url().split("/").pop()!;
+  await expect(seller.page.getByText("The platform's arbiter decides a dispute")).toBeVisible();
+
+  // The buyer's browser seals the secret to the platform's key, as for any arbiter.
+  await acceptAndPay(buyer, seller, id);
+  await arbiter.goto(`/escrows/${id}`);
+  await arbiter.getByRole("button", { name: "Check the sealed secret" }).click();
+  await arbiter.getByRole("button", { name: "Confirm to both parties" }).click();
+  await expect(arbiter.getByText("You confirmed this.")).toBeVisible();
+
+  // The buyer has the goods but will not release; the seller disputes and the platform decides.
+  await openDispute(seller, "The buyer has the parcel and will not release.");
+  await expect(arbiter.getByText("A dispute is waiting for your decision.")).toBeVisible();
+  await arbiter.getByLabel("Your note").fill("Proof of delivery accepted.");
+  await arbiter.getByRole("button", { name: "Release to the seller" }).click();
+  await arbiter.getByRole("button", { name: "Yes, pay the seller" }).click();
+  for (const p of [seller.page, buyer.page, arbiter]) await expect(stateBadge(p, "Settled")).toBeVisible();
+  await context.close();
+});
+
 test("arbitration: the arbiter refunds a disputed escrow to the buyer", async ({ browser }) => {
   const { arbiter, seller, buyer } = await arbitratedLocked(browser, "e2e arbiter refund");
   await openDispute(buyer, "Nothing arrived.");

@@ -166,6 +166,10 @@ pub struct CreateReq {
     /// A trusted third party who decides if there is a dispute. They must have registered a key.
     #[serde(default)]
     arbiter_id: Option<String>,
+    /// Do not use the platform's arbiter. Only meaningful when no `arbiter_id` is given: without it
+    /// (and when the server has a platform arbiter) one is added for you.
+    #[serde(default)]
+    no_arbiter: bool,
     /// Show the amount in this currency too (display only; the escrow is still in sats). The rate
     /// is taken now and locked.
     #[serde(default)]
@@ -222,7 +226,7 @@ where
 
     let arbiter_id = req.arbiter_id.as_deref().map(str::trim).filter(|a| !a.is_empty()).map(str::to_string);
     let arbiter = match &arbiter_id {
-        None => None,
+        None => platform_arbiter_for(&st, &user.id, buyer_id.as_deref(), req.no_arbiter).await?,
         Some(id) => {
             match st.users.get_user(id).await? {
                 Some(a) if a.role == Role::User => {}
@@ -262,9 +266,10 @@ where
     let key = headers.get("idempotency-key").and_then(|v| v.to_str().ok()).map(str::to_string);
     let body_hash = hex::encode(Sha256::digest(
         format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
             buyer_id.as_deref().unwrap_or(""),
             arbiter_id.as_deref().unwrap_or(""),
+            req.no_arbiter,
             fiat.as_ref().map(|f| f.currency.as_str()).unwrap_or(""),
             req.amount_sats,
             req.description,
@@ -698,6 +703,49 @@ fn node_in_use() -> ApiError {
 }
 
 // --- Arbitration ----------------------------------------------------------------------------
+
+/// The platform's arbiter, when it applies: one is configured, it has a key, the seller did not opt
+/// out, and it is not a party to this escrow. Anything else means no arbiter, never an error: a seller
+/// who named none asked for none, and a missing platform key must not stop escrows being made.
+async fn platform_arbiter_for<A, S>(
+    st: &AppState<A, S>,
+    seller_id: &str,
+    buyer_id: Option<&str>,
+    opted_out: bool,
+) -> Result<Option<(String, String)>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let Some(id) = st.config.platform_arbiter_id.as_deref() else { return Ok(None) };
+    if opted_out || id == seller_id || buyer_id == Some(id) {
+        return Ok(None);
+    }
+    match (st.users.get_user(id).await?, st.users.arbiter_key(id).await?) {
+        (Some(u), Some(key)) if u.role == Role::User => Ok(Some((id.to_string(), key))),
+        _ => {
+            tracing::warn!(arbiter = id, "the platform arbiter is not a user with a key; escrows are made without one");
+            Ok(None)
+        }
+    }
+}
+
+/// Who the platform's arbiter is, so a seller can see it and compare its fingerprint. `id` is null
+/// when the server has none (or it has not set up its key yet).
+pub async fn default_arbiter<A, S>(State(st): State<AppState<A, S>>, Auth(_user): Auth) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    let found = match st.config.platform_arbiter_id.as_deref() {
+        Some(id) => st.users.arbiter_key(id).await?.map(|key| (id.to_string(), key)),
+        None => None,
+    };
+    Ok(Json(match found {
+        Some((id, key)) => json!({ "id": id, "fingerprint": arbiter::fingerprint(&key) }),
+        None => json!({ "id": null, "fingerprint": null }),
+    }))
+}
 
 /// An arbiter registers the public key people encrypt release secrets to.
 #[derive(Deserialize)]
