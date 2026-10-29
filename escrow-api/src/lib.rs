@@ -59,6 +59,10 @@ pub struct ApiConfig {
     /// account that has set up an arbiter key; someone on the operator's side signs in as it to
     /// confirm and decide. Without it, an escrow with no named arbiter has none.
     pub platform_arbiter_id: Option<String>,
+    /// How long a newly set or changed withdrawal PIN waits before it can authorise a withdrawal, in
+    /// seconds. It stops someone with only a stolen sign-in from setting a PIN and emptying a balance
+    /// before the owner notices.
+    pub pin_cooloff_secs: i64,
 }
 
 impl Default for ApiConfig {
@@ -71,6 +75,7 @@ impl Default for ApiConfig {
             cors_origins: Vec::new(),
             web_base_url: None,
             platform_arbiter_id: None,
+            pin_cooloff_secs: 24 * 3600,
         }
     }
 }

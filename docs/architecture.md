@@ -166,7 +166,7 @@ The server is deliberately unable to take or release money by itself.
 | **Seller's node macaroon** | Seller's node | Server, encrypted at rest | Invoice-only: it cannot spend. |
 | **Arbiter's private key** | Arbiter's browser | That browser (with backup/restore) | Only the arbiter. |
 | **Webhook signing secret** | Server | Sealed at rest | Shown once to the business. |
-| **Withdrawal PIN** | The seller | Argon2 hash; 5 wrong guesses lock it for 15 minutes | Only the seller. |
+| **Withdrawal PIN** | The seller | Argon2 hash; 5 wrong guesses lock it for 15 minutes; a new or changed PIN waits 24 hours before it can authorise a withdrawal | Only the seller. |
 
 Consequences worth keeping in mind when changing things:
 
@@ -219,7 +219,7 @@ A small ES-module client with no dependencies (Node 18+): `Toshi` (`create`, `ge
 | `ALLOW_PRIVATE_NODE_ADDRESSES` | `1` to let sellers connect nodes on private addresses (local testing only). |
 | `PAYOUT_MACAROON` | A macaroon allowed to send payments, to enable shared-node withdrawals. |
 | `RAMP_PROVIDER`, `RAMP_LND_*`, `RAMP_FEE_BPS` | The naira ramp (`off` or the labelled `demo` provider). |
-| `NAIRA_HOLD_HOURS`, `WITHDRAW_LIMIT_SATS` | Withdrawal safety limits (24 h and 1,000,000 by default). |
+| `NAIRA_HOLD_HOURS`, `WITHDRAW_LIMIT_SATS`, `PIN_COOLOFF_HOURS` | Withdrawal safety limits (24 h, 1,000,000 sats and 24 h by default). `PIN_COOLOFF_HOURS` is how long a new or changed PIN waits before it works, so a stolen sign-in cannot set a PIN and withdraw at once. |
 | `FIAT_PROVIDER` | `off`, `coingecko`, `mempool`, or `fixed:USD=65000,NGN=…` (labelled "demo rate"). |
 | `PUBLIC_WEB_URL` | The web app's public address, so the API can return `checkout_url`. |
 | `PLATFORM_ARBITER_ID` | An account that acts as arbiter when a seller names none. |

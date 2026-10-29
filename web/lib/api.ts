@@ -296,6 +296,7 @@ export function describeError(err: unknown): string {
     case "pin_required":
       return "Enter your withdrawal PIN.";
     case "wrong_pin":
+    case "pin_cooling_off":
     case "pin_locked":
     case "invalid_pin":
     case "withdrawal_limit":

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api, describeError } from "@/lib/api";
-import { formatLocalTime, formatSats } from "@/lib/clock";
+import { formatLocalTime, formatSats, useServerNow } from "@/lib/clock";
 import {
   PinInput,
   type Balance,
@@ -255,6 +255,11 @@ function PinCard({
     tone: "success" | "error";
     text: string;
   } | null>(null);
+  const now = useServerNow();
+  const coolingUntil =
+    pin.usable_from !== null && now !== null && pin.usable_from > now
+      ? pin.usable_from
+      : null;
 
   async function save(e: FormEvent) {
     e.preventDefault();
@@ -266,14 +271,22 @@ function PinCard({
     setBusy(true);
     setMsg(null);
     try {
-      onChange(await api.setWithdrawalPin(next, pin.set ? current : undefined));
+      const saved = await api.setWithdrawalPin(
+        next,
+        pin.set ? current : undefined,
+      );
+      onChange(saved);
       setCurrent("");
       setNext("");
       setAgain("");
       setOpen(false);
       setMsg({
         tone: "success",
-        text: pin.set ? "PIN changed." : "PIN set. You can withdraw now.",
+        text: saved.usable_from
+          ? `${pin.set ? "PIN changed" : "PIN set"}. For your protection it works for withdrawals from ${formatLocalTime(saved.usable_from)}.`
+          : pin.set
+            ? "PIN changed."
+            : "PIN set. You can withdraw now.",
       });
     } catch (err) {
       setMsg({ tone: "error", text: describeError(err) });
@@ -284,6 +297,19 @@ function PinCard({
 
   return (
     <Card title={pin.set ? undefined : "Set a withdrawal PIN"}>
+      {coolingUntil !== null && (
+        <div className="mb-4">
+          <Notice tone="warn">
+            <strong>
+              Your PIN starts working for withdrawals at{" "}
+              {formatLocalTime(coolingUntil)}.
+            </strong>{" "}
+            A new or changed PIN waits first, so that someone who steals your
+            sign-in can&apos;t set a PIN and empty your balance before you
+            notice. If you didn&apos;t just set this PIN, change it now.
+          </Notice>
+        </div>
+      )}
       {pin.set && !open ? (
         <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
           <span className="flex items-center gap-2">

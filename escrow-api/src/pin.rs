@@ -50,6 +50,33 @@ async fn matches(stored: String, pin: String) -> bool {
     .unwrap_or(false)
 }
 
+/// Check a PIN for a **withdrawal**: first, that it has been set for long enough.
+///
+/// Whoever holds a stolen sign-in token can set the first PIN on an account that has none, so a PIN
+/// that was only just set (or changed) cannot authorise money leaving until `cooloff_secs` have
+/// passed. The real owner, who is told on the Balance page when it starts to work, has that long to
+/// notice and act. The wait comes before the guess is counted, so waiting out the clock costs no tries.
+pub async fn check_for_withdrawal<S: PayoutStore>(
+    store: &S,
+    user_id: &str,
+    pin: Option<&str>,
+    now: i64,
+    cooloff_secs: i64,
+) -> Result<(), ApiError> {
+    if let Some(record) = store.get_withdrawal_pin(user_id).await? {
+        let usable_from = record.updated_at.saturating_add(cooloff_secs);
+        if now < usable_from {
+            let hours = (usable_from - now + 3599) / 3600;
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "pin_cooling_off",
+                format!("a new PIN can be used for withdrawals after a short wait, to protect your balance; about {hours} hours left"),
+            ));
+        }
+    }
+    check(store, user_id, pin, now).await
+}
+
 /// Check `pin` for `user_id` before money leaves. Every wrong guess is counted.
 pub async fn check<S: PayoutStore>(store: &S, user_id: &str, pin: Option<&str>, now: i64) -> Result<(), ApiError> {
     let Some(record) = store.get_withdrawal_pin(user_id).await? else {

@@ -46,8 +46,13 @@ struct Account {
     token: String,
 }
 
-/// `money` turns on balances and the demo naira ramp; without it the server offers neither.
+/// `money` turns on balances and the demo naira ramp; without it the server offers neither. A new PIN
+/// works at once here; [`app_with`] sets how long it waits.
 async fn app(money: bool) -> App {
+    app_with(money, 0).await
+}
+
+async fn app_with(money: bool, pin_cooloff_secs: i64) -> App {
     let node = MockLightning::new();
     let store = Arc::new(MemoryStore::new());
     let service = Arc::new(EscrowService::new(node.clone(), store.clone(), TimingConfig::default()));
@@ -57,7 +62,7 @@ async fn app(money: bool) -> App {
         Arc::new(move || clock.load(Ordering::SeqCst))
     };
     ensure_operator(&store, OPERATOR_TOKEN, T0).await.unwrap();
-    let config = ApiConfig { rate_limit_per_min: 100_000, register_limit_per_min: 100_000, ..Default::default() };
+    let config = ApiConfig { rate_limit_per_min: 100_000, register_limit_per_min: 100_000, pin_cooloff_secs, ..Default::default() };
     let rates = Arc::new(FixedRates::parse("NGN=97500000").unwrap());
     let mut state = AppState::new(service.clone(), store.clone(), config, now).with_rates(rates);
     let (shared, ramp_wallet) = (MockWallet::new(), MockWallet::new());
@@ -401,3 +406,50 @@ async fn withdrawals_need_the_pin_and_wrong_guesses_lock_it() {
     let (s, v) = withdraw("482915").await;
     assert_eq!((s, code(&v)), (StatusCode::FORBIDDEN, "wrong_pin".into()));
 }
+
+#[tokio::test]
+async fn a_newly_set_pin_cannot_authorise_a_withdrawal_until_it_has_cooled_off() {
+    const WAIT: i64 = 24 * 3600;
+    let app = app_with(true, WAIT).await;
+    let (seller, buyer) = (app.register().await, app.register().await);
+    app.earn(&seller, &buyer, 20_000, 1).await;
+    let code = |v: &Value| v["error"]["code"].as_str().unwrap_or_default().to_string();
+    let lightning = |app: &App| {
+        let invoice = app.shared.invoice(1_000, app.clock.load(Ordering::SeqCst) + 3600);
+        json!({"invoice": invoice, "pin": PIN})
+    };
+    let bank = json!({"amount_sats": 6_000, "bank_code": "057", "account_number": "2012345678", "pin": PIN});
+
+    // Someone who stole only the sign-in token sets a PIN of their own and tries to withdraw at once.
+    app.set_pin(&seller).await;
+    let (s, v) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(lightning(&app))).await;
+    assert_eq!((s, code(&v)), (StatusCode::FORBIDDEN, "pin_cooling_off".into()), "{v}");
+    let (s, v) = app.call(Method::POST, "/api/v1/ramp/offramp", Some(&seller.token), Some(bank.clone())).await;
+    assert_eq!((s, code(&v)), (StatusCode::FORBIDDEN, "pin_cooling_off".into()), "the bank route is covered too: {v}");
+
+    // The wait costs no guesses, and the owner can see when the PIN starts to work.
+    assert_eq!(app.store.get_withdrawal_pin(&seller.id).await.unwrap().unwrap().failures, 0);
+    let (_, v) = app.call(Method::GET, "/api/v1/me/withdrawal-pin", Some(&seller.token), None).await;
+    assert_eq!(v["usable_from"], T0 + WAIT, "{v}");
+
+    // One second early is still too early; at the time it works, and the date disappears.
+    app.clock.fetch_add(WAIT - 1, Ordering::SeqCst);
+    let (s, v) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(lightning(&app))).await;
+    assert_eq!((s, code(&v)), (StatusCode::FORBIDDEN, "pin_cooling_off".into()), "{v}");
+    app.clock.fetch_add(1, Ordering::SeqCst);
+    let (s, v) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(lightning(&app))).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (_, v) = app.call(Method::GET, "/api/v1/me/withdrawal-pin", Some(&seller.token), None).await;
+    assert!(v["usable_from"].is_null(), "{v}");
+
+    // Changing the PIN starts the wait again, so a PIN learned by looking over a shoulder is not enough either.
+    let (s, _) = app
+        .call(Method::PUT, "/api/v1/me/withdrawal-pin", Some(&seller.token), Some(json!({"pin": "905173", "current_pin": PIN})))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = app
+        .call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(json!({"invoice": app.shared.invoice(1_000, T0 + 3 * WAIT), "pin": "905173"})))
+        .await;
+    assert_eq!((s, code(&v)), (StatusCode::FORBIDDEN, "pin_cooling_off".into()), "{v}");
+}
+
