@@ -222,6 +222,7 @@ where
             .ok()
             .map(|u| u.trim().trim_end_matches('/').to_string())
             .filter(|u| u.starts_with("https://") || u.starts_with("http://")),
+        platform_arbiter_id: std::env::var("PLATFORM_ARBITER_ID").ok().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()),
         ..ApiConfig::default()
     };
     let rates = escrow_api::rates::from_setting(&env("FIAT_PROVIDER", Some("off"))).unwrap_or_else(|e| {

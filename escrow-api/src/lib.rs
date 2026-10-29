@@ -55,6 +55,10 @@ pub struct ApiConfig {
     /// The public address of the web app (for example `https://pay.example.com`). With it, the API can
     /// give a business the checkout link for each escrow it makes. Without it there is no such link.
     pub web_base_url: Option<String>,
+    /// The account that acts as the arbiter of an escrow whose seller names none. It is an ordinary
+    /// account that has set up an arbiter key; someone on the operator's side signs in as it to
+    /// confirm and decide. Without it, an escrow with no named arbiter has none.
+    pub platform_arbiter_id: Option<String>,
 }
 
 impl Default for ApiConfig {
@@ -66,6 +70,7 @@ impl Default for ApiConfig {
             register_limit_per_min: 10,
             cors_origins: Vec::new(),
             web_base_url: None,
+            platform_arbiter_id: None,
         }
     }
 }
@@ -229,6 +234,7 @@ where
         .route("/api/v1/me", get(routes::me))
         .route("/api/v1/rates", get(routes::rates_list::<A, S>))
         .route("/api/v1/rates/{currency}", get(routes::rates_one::<A, S>))
+        .route("/api/v1/arbiter/default", get(routes::default_arbiter::<A, S>))
         .route(
             "/api/v1/me/arbiter-key",
             get(routes::arbiter_key_get::<A, S>).put(routes::arbiter_key_put::<A, S>),

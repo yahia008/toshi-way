@@ -10,7 +10,7 @@ import { scannerSupported, secretFromScan } from "@/lib/scan";
 import { buildReleaseLink, generateSecret, hashSecret, loadSecret, saveSecret } from "@/lib/secret";
 import { getWebLN, payWithWebLN } from "@/lib/webln";
 import { Button, Card, ConfirmButton, CopyButton, CopyField, Countdown, Field, inputClass, Notice, Spinner } from "../ui";
-import { useStoredSecret } from "./hooks";
+import { useDefaultArbiter, useStoredSecret } from "./hooks";
 import { EvidenceList, NotesBox } from "./Notes";
 import { NairaPay, PayChoice } from "./NairaPay";
 import { Scanner } from "./Scanner";
@@ -694,12 +694,13 @@ function OperatorPanel({ escrow, actions }: { escrow: Escrow; actions: Actions }
 
 /** The arbiter's key fingerprint and confirmation status, shown to buyer and seller. */
 function ArbiterNotice({ escrow }: { escrow: Escrow }) {
+  const platform = useDefaultArbiter() === escrow.arbiter_id;
   return (
     <Notice tone="info">
       <div className="space-y-1">
         <div>
-          <strong>This escrow has an arbiter</strong> (<span className="font-mono">{escrow.arbiter_id}</span>) who
-          decides a dispute.
+          <strong>{platform ? "The platform's arbiter decides a dispute" : "This escrow has an arbiter"}</strong> (
+          <span className="font-mono">{escrow.arbiter_id}</span>){platform ? "." : " who decides a dispute."}
         </div>
         <div className="text-xs">
           Their key fingerprint is <span className="break-words font-mono">{escrow.arbiter_fingerprint}</span>. Check

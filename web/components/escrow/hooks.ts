@@ -58,6 +58,24 @@ export function useEscrow(id: string) {
   return { escrow, setEscrow, error, refresh };
 }
 
+/** The platform's own arbiter (its user id), or null when the server has none. */
+export function useDefaultArbiter(): string | null {
+  const [id, setId] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api
+      .defaultArbiter()
+      .then((d) => alive && setId(d.id))
+      .catch(() => {
+        // Only a label; without it the escrow just says "an arbiter".
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return id;
+}
+
 /** The audit log and node events, refetched whenever the escrow changes. */
 export function useEvents(id: string, version: string | null) {
   const [events, setEvents] = useState<EscrowEvents | null>(null);

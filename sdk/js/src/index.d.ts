@@ -77,6 +77,8 @@ export interface CreateEscrowParams {
   /** A link back to your site, shown to the buyer after they accept. `https://` only. */
   return_url?: string;
   arbiter_id?: string;
+  /** Decline the platform's arbiter, if the server has one and you name none. */
+  no_arbiter?: boolean;
   /** Show the amount in this currency too (display only), for example `USD`. */
   fiat_currency?: string;
   /** Makes a repeat of this call safe. Defaults to a random value, reused across retries. */

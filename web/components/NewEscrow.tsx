@@ -11,6 +11,7 @@ import {
   NewEscrowForm,
   type NodeInfo,
   type RateQuote,
+  type DefaultArbiter,
   type RatesInfo,
 } from "@/lib/schemas";
 import { useSession } from "@/lib/session";
@@ -30,6 +31,8 @@ type Values = {
   title: string;
   buyer_id: string;
   arbiter_id: string;
+  /** Who decides a dispute: the platform's arbiter, one the seller names, or nobody. */
+  arbiter_mode: "platform" | "own" | "none";
   fiat_currency: string;
   amount_sats: string;
   /** The price in naira, when the seller prices the deal in naira. */
@@ -43,6 +46,7 @@ const initial: Values = {
   title: escrowTypes[0].dealTitle,
   buyer_id: "",
   arbiter_id: "",
+  arbiter_mode: "platform",
   fiat_currency: "",
   amount_sats: "",
   amount_naira: "",
@@ -129,6 +133,7 @@ export function NewEscrow() {
   const [rates, setRates] = useState<RatesInfo | null>(null);
   const [quote, setQuote] = useState<RateQuote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [platform, setPlatform] = useState<DefaultArbiter | null>(null);
   const [priceIn, setPriceIn] = useState<"sats" | "naira">("sats");
 
   useEffect(() => {
@@ -143,6 +148,11 @@ export function NewEscrow() {
     api
       .rates()
       .then((r) => alive && setRates(r))
+      .catch(() => {});
+    // Whether the platform has its own arbiter to offer. If this fails the form just asks for one by id.
+    api
+      .defaultArbiter()
+      .then((d) => alive && setPlatform(d.id ? d : null))
       .catch(() => {});
     return () => {
       alive = false;
@@ -274,6 +284,13 @@ export function NewEscrow() {
         ? { amount_sats: String(nairaSats), fiat_currency: "NGN" }
         : {}),
       description: composeDescription(values),
+      // With a platform arbiter on offer the choice decides what is sent; without one, an id or nothing.
+      ...(platform
+        ? {
+            arbiter_id: values.arbiter_mode === "own" ? values.arbiter_id : "",
+            no_arbiter: values.arbiter_mode === "none",
+          }
+        : {}),
     });
     if (!parsed.success) {
       const next: Partial<Record<keyof Values, string>> = {};
@@ -606,20 +623,81 @@ export function NewEscrow() {
                     spellCheck={false}
                   />
                 </Field>
-                <Field
-                  label="Arbiter's user id (optional)"
-                  hint="Someone you and the buyer both trust to decide a dispute. Without one, a dispute is just flagged for the operator and the buyer's refund is the default. They must have set up a key on the Arbiter page."
-                  error={errors.arbiter_id}
-                >
-                  <input
-                    value={values.arbiter_id}
-                    onChange={(e) => set("arbiter_id", e.target.value)}
-                    className={`${inputClass} font-mono`}
-                    placeholder="u_…"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </Field>
+                {platform && (
+                  <fieldset className="space-y-2">
+                    <legend className="text-sm font-medium">
+                      Who decides if you and the buyer disagree?
+                    </legend>
+                    <div
+                      role="radiogroup"
+                      aria-label="Arbiter"
+                      className="space-y-2"
+                    >
+                      {(
+                        [
+                          [
+                            "platform",
+                            "The platform's arbiter (recommended)",
+                            "A neutral party is already in place, so a dispute can be decided in your favour if you delivered. Their key fingerprint is shown below.",
+                          ],
+                          [
+                            "own",
+                            "An arbiter I choose",
+                            "Someone you and the buyer both trust, who has set up a key on the Arbiter page.",
+                          ],
+                          [
+                            "none",
+                            "No arbiter",
+                            "A dispute is just flagged for the operator, and the buyer's refund is the default. You cannot be paid without the buyer's release.",
+                          ],
+                        ] as const
+                      ).map(([id, title, body]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          role="radio"
+                          aria-checked={values.arbiter_mode === id}
+                          onClick={() => set("arbiter_mode", id)}
+                          className={`w-full rounded-xl border-2 p-3 text-left transition-colors ${
+                            values.arbiter_mode === id
+                              ? "border-amber-500 bg-amber-50 dark:bg-amber-500/10"
+                              : "border-neutral-200 hover:border-neutral-400 dark:border-neutral-800 dark:hover:border-neutral-600"
+                          }`}
+                        >
+                          <div className="text-sm font-semibold">{title}</div>
+                          <div className="mt-0.5 text-xs text-neutral-600 dark:text-neutral-400">
+                            {body}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                    {values.arbiter_mode === "platform" &&
+                      platform.fingerprint && (
+                        <p className="text-xs text-neutral-500">
+                          Key fingerprint:{" "}
+                          <span className="break-all font-mono">
+                            {platform.fingerprint}
+                          </span>
+                        </p>
+                      )}
+                  </fieldset>
+                )}
+                {(!platform || values.arbiter_mode === "own") && (
+                  <Field
+                    label="Arbiter's user id (optional)"
+                    hint="Someone you and the buyer both trust to decide a dispute. Without one, a dispute is just flagged for the operator and the buyer's refund is the default. They must have set up a key on the Arbiter page."
+                    error={errors.arbiter_id}
+                  >
+                    <input
+                      value={values.arbiter_id}
+                      onChange={(e) => set("arbiter_id", e.target.value)}
+                      className={`${inputClass} font-mono`}
+                      placeholder="u_…"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </Field>
+                )}
                 {formError && <Notice tone="error">{formError}</Notice>}
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <Button

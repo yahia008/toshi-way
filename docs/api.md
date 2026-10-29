@@ -155,7 +155,8 @@ Make an offer. Returns `201` and the escrow.
 | `buyer_id` | no | a toshi-way user id; leave out for an open offer |
 | `reference` | no | your order number, up to 100 characters, no control characters |
 | `return_url` | no | `https://` only, a plain host, no `user@`, up to 500 characters (`http://localhost` is allowed for testing) |
-| `arbiter_id` | no | a user both sides trust to decide disputes; they must have set up a key |
+| `arbiter_id` | no | a user both sides trust to decide disputes; they must have set up a key. Leave it out and, if the server has a platform arbiter, that account is used |
+| `no_arbiter` | no | `true` to decline the platform arbiter when you name none. Without any arbiter a dispute is only flagged for the operator and the buyer's refund is the default |
 | `fiat_currency` | no | for example `USD`; shows an approximate value beside the sats |
 
 Errors: `invalid_amount`, `invalid_description`, `invalid_deadline`, `invalid_reference`, `invalid_return_url`, `unknown_buyer`, `unknown_arbiter`, `arbiter_has_no_key`, `unsupported_currency`, `rate_unavailable`, `no_node` (you have no node connected and the server has no shared one), `idempotency_key_reuse`.
@@ -174,6 +175,9 @@ To find an escrow by your order number, list and match on `reference`.
 
 ### `GET /api/v1/escrows/{id}/events` (scope `escrows:read`)
 The escrow's history: `audit` (each change: `actor`, `action`, `from_state`, `to_state`, `reason`, `at`) and `node_events` (what the Lightning node reported, with its time).
+
+### `GET /api/v1/arbiter/default`
+The platform's own arbiter: `{ "id": "u_...", "fingerprint": "..." }`, or both `null` when the server has none (or its key is not set up yet). Compare the fingerprint with the one the operator publishes. It is the arbiter an escrow gets when you name none and do not set `no_arbiter`. The buyer's release secret is sealed to its key like any arbiter's, so the buyer's page must seal to it when accepting.
 
 ### `POST /api/v1/escrows/{id}/cancel` (scope `escrows:write`)
 Withdraw the offer. If the buyer has already paid, **this refunds them**. Not repeatable on its own: a second call returns `409 invalid_state` once it is over. Returns the escrow.
