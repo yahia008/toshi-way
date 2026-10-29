@@ -11,6 +11,7 @@
 #                                   after a restart ("RWLayer ... is unexpectedly nil"); then run `up` again
 #
 #   PUBLIC_URL=https://you.ngrok-free.dev ./scripts/demo-env.sh up   also let the demo wallet answer a tunnelled page
+#   (A new withdrawal PIN works at once in the demo; a real server makes it wait 24 hours: PIN_COOLOFF_HOURS.)
 #   PLATFORM_ARBITER_ID=u_... ./scripts/demo-env.sh up   make that account the arbiter of escrows that name none
 #                                   (the seeded arbiter is .demo/accounts.json "arbiter"; this changes every escrow's flow)
 #
@@ -134,7 +135,7 @@ start_server() {
   [ -f regtest/creds/buyer/payout.macaroon ] && ramp="${RAMP_PROVIDER:-demo}"
   ( exec env DATABASE_PATH="$DEMO/toshi.db" ALLOW_PRIVATE_NODE_ADDRESSES=1 REGISTER_LIMIT_PER_MIN=200 \
       FIAT_PROVIDER="${FIAT_PROVIDER:-fixed:USD=65000,EUR=60000,GBP=51000,NGN=97500000}" \
-      PAYOUT_MACAROON="$payout" RAMP_PROVIDER="$ramp" PLATFORM_ARBITER_ID="${PLATFORM_ARBITER_ID:-}" \
+      PAYOUT_MACAROON="$payout" RAMP_PROVIDER="$ramp" PLATFORM_ARBITER_ID="${PLATFORM_ARBITER_ID:-}" PIN_COOLOFF_HOURS="${PIN_COOLOFF_HOURS:-0}" \
       ./target/debug/toshi-server ) \
     > "$DEMO/server.log" 2>&1 < /dev/null &
   echo $! > "$DEMO/server.pid"

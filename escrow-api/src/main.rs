@@ -222,6 +222,7 @@ where
             .ok()
             .map(|u| u.trim().trim_end_matches('/').to_string())
             .filter(|u| u.starts_with("https://") || u.starts_with("http://")),
+        pin_cooloff_secs: limit("PIN_COOLOFF_HOURS", 24) as i64 * 3600,
         platform_arbiter_id: std::env::var("PLATFORM_ARBITER_ID").ok().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()),
         ..ApiConfig::default()
     };

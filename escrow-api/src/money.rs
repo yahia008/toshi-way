@@ -159,7 +159,7 @@ where
 {
     no_operator(&user)?;
     let p = payouts(&st)?;
-    crate::pin::check(&st.users, &user.id, req.pin.as_deref(), (st.now)()).await?;
+    crate::pin::check_for_withdrawal(&st.users, &user.id, req.pin.as_deref(), (st.now)(), st.config.pin_cooloff_secs).await?;
     let w = p.withdraw(&user.id, &req.invoice, WithdrawalKind::Lightning, (st.now)()).await?;
     Ok((StatusCode::CREATED, Json(withdrawal_view(&w))))
 }
@@ -186,8 +186,11 @@ where
     S: Store + UserStore + PayoutStore + Clone + 'static,
 {
     let pin = st.users.get_withdrawal_pin(&user.id).await?;
-    let locked_until = pin.as_ref().and_then(|p| p.locked_until).filter(|&t| t > (st.now)());
-    Ok(Json(json!({ "set": pin.is_some(), "locked_until": locked_until })))
+    let now = (st.now)();
+    let locked_until = pin.as_ref().and_then(|p| p.locked_until).filter(|&t| t > now);
+    // While a new PIN is still cooling off: when it starts to work for withdrawals.
+    let usable_from = pin.as_ref().map(|p| p.updated_at.saturating_add(st.config.pin_cooloff_secs)).filter(|&t| t > now);
+    Ok(Json(json!({ "set": pin.is_some(), "locked_until": locked_until, "usable_from": usable_from })))
 }
 
 #[derive(Deserialize)]
@@ -216,7 +219,8 @@ where
     }
     let hash = crate::pin::hash(pin.to_string()).await?;
     st.users.set_withdrawal_pin(&user.id, &hash, now).await?;
-    Ok(Json(json!({ "set": true, "locked_until": null })))
+    let usable_from = now.saturating_add(st.config.pin_cooloff_secs);
+    Ok(Json(json!({ "set": true, "locked_until": null, "usable_from": (usable_from > now).then_some(usable_from) })))
 }
 
 // --- Naira ramp -------------------------------------------------------------------------------
@@ -381,7 +385,7 @@ where
 {
     no_operator(&user)?;
     let r = ramp(&st)?;
-    crate::pin::check(&st.users, &user.id, req.pin.as_deref(), (st.now)()).await?;
+    crate::pin::check_for_withdrawal(&st.users, &user.id, req.pin.as_deref(), (st.now)(), st.config.pin_cooloff_secs).await?;
     let bank = r.provider().resolve_account(req.bank_code.trim(), req.account_number.trim()).await?;
     let rate = ramp_rate(&st, r).await?;
     let order = r.start_offramp(&user.id, req.amount_sats, bank, rate, (st.now)()).await?;

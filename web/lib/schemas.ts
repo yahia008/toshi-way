@@ -352,7 +352,12 @@ export type Withdrawal = z.infer<typeof Withdrawal>;
 export const WithdrawalList = z.object({ withdrawals: z.array(Withdrawal) });
 
 /** Whether the person has a withdrawal PIN, and until when it is locked after wrong guesses. */
-export const PinStatus = z.object({ set: z.boolean(), locked_until: unixSecs.nullable() });
+export const PinStatus = z.object({
+  set: z.boolean(),
+  locked_until: unixSecs.nullable(),
+  /** While a new PIN is cooling off: when it starts to work for withdrawals. */
+  usable_from: unixSecs.nullable().default(null),
+});
 export type PinStatus = z.infer<typeof PinStatus>;
 
 export const PinInput = z
