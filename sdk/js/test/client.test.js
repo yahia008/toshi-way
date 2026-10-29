@@ -124,3 +124,12 @@ test("the constructor checks what it needs", () => {
   assert.throws(() => new Toshi({ apiKey: "tk_a" }), TypeError);
   assert.throws(() => new Toshi({ apiKey: "tk_a", baseUrl: "https://x", fetch: null }), TypeError);
 });
+
+test("note posts the kind and text and is never repeated on its own", async () => {
+  const { toshi, fetch } = make([{ status: 503, json: { error: { code: "node_unavailable", message: "down" } } }]);
+  await assert.rejects(() => toshi.escrows.note("e1", "delivered", "tracking NG123"), (e) => e.status === 503);
+  assert.equal(fetch.calls.length, 1);
+  assert.equal(fetch.calls[0].url, "https://pay.example.com/api/v1/escrows/e1/notes");
+  assert.equal(fetch.calls[0].method, "POST");
+  assert.deepEqual(fetch.calls[0].body, { kind: "delivered", text: "tracking NG123" });
+});

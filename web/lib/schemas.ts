@@ -274,6 +274,12 @@ export const SecretInput = z
   .toLowerCase()
   .regex(/^[0-9a-f]{64}$/, "The secret is exactly 64 hex characters (0-9, a-f)");
 
+export const NoteForm = z
+  .string()
+  .trim()
+  .min(1, "Write something first")
+  .max(500, "At most 500 characters");
+
 export const DisputeForm = z
   .string()
   .trim()

@@ -17,6 +17,7 @@ import { useSession } from "@/lib/session";
 import { SignIn } from "./Account";
 import {
   BuyerPanel,
+  EvidenceGuide,
   escrowTypes,
   SidePicker,
   TypePicker,
@@ -351,6 +352,7 @@ export function NewEscrow() {
                   What is this escrow for?
                 </h2>
                 <TypePicker value={kind} onChange={pickKind} />
+                <EvidenceGuide type={kind} />
               </section>
               <Card title="Deal details">
                 <form onSubmit={next} className="space-y-4" noValidate>

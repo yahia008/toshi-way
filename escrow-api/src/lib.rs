@@ -249,6 +249,7 @@ where
         .route("/api/v1/escrows/{id}/release", post(routes::release::<A, S>))
         .route("/api/v1/escrows/{id}/cancel", post(routes::cancel::<A, S>))
         .route("/api/v1/escrows/{id}/dispute", post(routes::dispute::<A, S>))
+        .route("/api/v1/escrows/{id}/notes", post(routes::add_note::<A, S>))
         .route("/api/v1/escrows/{id}/events", get(routes::events::<A, S>))
         .route("/api/v1/escrows/{id}/arbitration", get(routes::arbitration_get::<A, S>))
         .route("/api/v1/escrows/{id}/arbitration/confirm", post(routes::arbitration_confirm::<A, S>))

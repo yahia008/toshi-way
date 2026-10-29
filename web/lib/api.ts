@@ -184,6 +184,10 @@ export const api = {
 
   dispute: (id: string, reason: string) => request("POST", `${esc(id)}/dispute`, Escrow, { body: { reason } }),
 
+  /** A delivery claim (the seller) or a piece of evidence (either side) on a locked or disputed escrow. */
+  addNote: (id: string, kind: "delivered" | "evidence", text: string) =>
+    request("POST", `${esc(id)}/notes`, Escrow, { body: { kind, text } }),
+
   events: (id: string) => request("GET", `${esc(id)}/events`, EscrowEvents),
 
   /** What the service owes you from escrows settled on its shared node. */

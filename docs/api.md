@@ -176,6 +176,22 @@ The escrow's history: `audit` (each change: `actor`, `action`, `from_state`, `to
 ### `POST /api/v1/escrows/{id}/cancel` (scope `escrows:write`)
 Withdraw the offer. If the buyer has already paid, **this refunds them**. Not repeatable on its own: a second call returns `409 invalid_state` once it is over. Returns the escrow.
 
+### `POST /api/v1/escrows/{id}/notes` (scope `escrows:write`)
+Say what happened while the money is locked. It moves no money and does not extend the deadline; it goes on the escrow's history (`GET .../events`, action `delivered` or `evidence`) and shows on the escrow page, where the buyer and any arbiter read it.
+
+```json
+{ "kind": "delivered", "text": "Signed for by J. Okafor, tracking NG123" }
+```
+
+| Field | Notes |
+|---|---|
+| `kind` | `delivered`: the seller says the goods or work were delivered. Only the seller. `evidence`: either side, for whoever decides a dispute |
+| `text` | 1 to 500 characters: a tracking number, a link, a short description |
+
+Only while the escrow is `LOCKED` or `DISPUTED` and before its deadline (`409 invalid_state` or `409 too_late` otherwise). Each person can add 10 notes to one escrow. A buyer's note needs their own account, not an API key; a key acts as the seller. A note produces an `escrow.updated` webhook with the state unchanged. Returns the escrow.
+
+**Marking delivered does not pay you.** Only the buyer's release secret does. If the buyer stays silent they are refunded at the deadline, so mark delivery early, and if there is an arbiter, open a dispute with your proof before the deadline so they can decide.
+
 ## Sending the customer to checkout
 
 Redirect the customer to `checkout_url`. They land on the escrow page. A customer with no account is signed up on the spot (they choose a password and save a recovery token); one with an account signs in. They accept the offer, pay the Lightning invoice, and the page updates by itself when the payment is locked.

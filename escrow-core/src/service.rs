@@ -36,6 +36,9 @@ pub enum ServiceError {
     Store(StoreError),
 }
 
+/// How many delivery and evidence notes one person may add to one escrow.
+pub const MAX_NOTES_PER_PARTY: usize = 10;
+
 /// Base64 text of a plausible size for a P-256 ECIES blob (65-byte key + 12-byte nonce + 48 bytes).
 fn valid_sealed(s: &str) -> bool {
     (100..=1024).contains(&s.len())
@@ -511,6 +514,47 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
         }
         self.move_to(&e, EscrowState::Disputed, EscrowUpdate::default(), actor, "dispute", reason, now)
             .await
+    }
+
+    /// A note on a locked or disputed escrow: the seller saying the goods or work were delivered, or
+    /// either side adding evidence for whoever has to decide. It changes no state and moves no money;
+    /// it is written to the audit log so the history shows who said what, and when. Like a dispute it
+    /// does not extend the hold.
+    pub async fn add_note(&self, id: &str, actor: &str, kind: &str, text: &str, now: i64) -> Result<Escrow, ServiceError> {
+        // The state can move between reading and writing (a dispute opens, say); try again once.
+        for _ in 0..2 {
+            let e = self.get(id).await?;
+            if !matches!(e.state, EscrowState::Locked | EscrowState::Disputed) {
+                return Err(ServiceError::InvalidState { action: "add a note to", state: e.state });
+            }
+            if now >= e.deadline_at {
+                return Err(ServiceError::TooLate);
+            }
+            let mine = self
+                .store
+                .audit_log(id)
+                .await?
+                .iter()
+                .filter(|a| a.actor == actor && matches!(a.action.as_str(), "delivered" | "evidence"))
+                .count();
+            if mine >= MAX_NOTES_PER_PARTY {
+                return Err(ServiceError::Invalid(format!("at most {MAX_NOTES_PER_PARTY} notes each")));
+            }
+            let audit = AuditEntry {
+                escrow_id: e.id.clone(),
+                actor: actor.to_string(),
+                action: kind.to_string(),
+                from_state: e.state,
+                to_state: e.state,
+                reason: text.to_string(),
+                created_at: now,
+            };
+            match self.store.transition(&e.id, e.state, EscrowUpdate::default(), audit).await {
+                Err(StoreError::Conflict) => continue,
+                other => return Ok(other?),
+            }
+        }
+        Err(ServiceError::Invalid("the escrow changed while the note was being saved; try again".into()))
     }
 
     /// The scheduler pass: cancel holds at their deadline, unpaid invoices once they expire, and

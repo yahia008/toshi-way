@@ -502,6 +502,49 @@ where
     Ok(Json(escrow_view(&escrow, party)))
 }
 
+#[derive(Deserialize)]
+pub struct NoteReq {
+    /// `delivered` (the seller says it is done) or `evidence` (either side, for whoever decides).
+    kind: String,
+    text: String,
+}
+
+/// Add a delivery claim or a piece of evidence to a locked or disputed escrow. It moves no money.
+pub async fn add_note<A, S>(
+    State(st): State<AppState<A, S>>,
+    auth: ApiAuth,
+    Path(id): Path<String>,
+    ApiJson(req): ApiJson<NoteReq>,
+) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + Clone + 'static,
+{
+    auth.require(Scope::EscrowsWrite)?;
+    let user = auth.user;
+    let (escrow, party) = load(&st, &id, &user).await?;
+    // Someone who has only seen an open offer's link is not its buyer, and arbiters and operators
+    // act through their own decisions, so only the two parties may add notes.
+    let is_party = party == Party::Seller || (party == Party::Buyer && escrow.buyer_id.as_deref() == Some(user.id.as_str()));
+    if !is_party {
+        return Err(ApiError::forbidden("only the buyer or seller can add a note"));
+    }
+    let kind = match req.kind.as_str() {
+        "delivered" if party != Party::Seller => {
+            return Err(ApiError::forbidden("only the seller can mark an escrow delivered"));
+        }
+        "delivered" => "delivered",
+        "evidence" => "evidence",
+        _ => return Err(ApiError::bad_request("invalid_kind", "kind must be \"delivered\" or \"evidence\"")),
+    };
+    let text = req.text.trim();
+    if text.is_empty() || text.chars().count() > st.config.max_description_len {
+        return Err(ApiError::bad_request("invalid_note", "a note must be 1 to 500 characters"));
+    }
+    let escrow = st.service.add_note(&id, &user.id, kind, text, (st.now)()).await?;
+    Ok(Json(escrow_view(&escrow, party)))
+}
+
 pub async fn events<A, S>(
     State(st): State<AppState<A, S>>,
     auth: ApiAuth,
