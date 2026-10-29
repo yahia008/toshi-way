@@ -33,12 +33,13 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/008_payouts.sql"),
     include_str!("migrations/009_withdrawal_invoice_once.sql"),
     include_str!("migrations/010_withdrawal_pins.sql"),
+    include_str!("migrations/011_delivered.sql"),
 ];
 
 const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, arbiter_id, arbiter_key, arbiter_sealed, \
      arbiter_confirmed_at, node, amount_sats, \
      fiat_currency, fiat_amount_minor, fiat_rate_minor, fiat_quoted_at, fiat_source, description, payment_hash, \
-     invoice, invoice_expires_at, state, deadline_at, created_at, updated_at, reference, return_url";
+     invoice, invoice_expires_at, state, deadline_at, created_at, updated_at, reference, return_url, delivered_at";
 
 /// Arbitrary constant naming the advisory lock that serialises migrations between instances.
 const MIGRATION_LOCK: i64 = 0x7405_4157;
@@ -124,6 +125,7 @@ fn escrow_from_row(row: &PgRow) -> Result<Escrow, StoreError> {
         arbiter_key: row.try_get("arbiter_key").map_err(backend)?,
         arbiter_sealed: row.try_get("arbiter_sealed").map_err(backend)?,
         arbiter_confirmed_at: row.try_get("arbiter_confirmed_at").map_err(backend)?,
+        delivered_at: row.try_get("delivered_at").map_err(backend)?,
         node: node.parse::<NodeKind>().map_err(StoreError::Backend)?,
         amount_sats: row.try_get::<i64, _>("amount_sats").map_err(backend)? as u64,
         fiat: fiat_from_row(row)?,
@@ -187,7 +189,7 @@ fn node_state_from_str(s: &str) -> Result<NodeInvoiceState, StoreError> {
 impl Store for PostgresStore {
     async fn insert(&self, e: Escrow) -> Result<(), StoreError> {
         let res = sqlx::query(&format!(
-            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)"
+            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)"
         ))
         .bind(&e.id)
         .bind(&e.buyer_id)
@@ -213,6 +215,7 @@ impl Store for PostgresStore {
         .bind(e.updated_at)
         .bind(&e.reference)
         .bind(&e.return_url)
+        .bind(e.delivered_at)
         .execute(&self.pool)
         .await;
         match res {
@@ -318,7 +321,8 @@ impl Store for PostgresStore {
                  invoice = COALESCE($5, invoice), \
                  invoice_expires_at = COALESCE($6, invoice_expires_at), \
                  arbiter_sealed = COALESCE($9, arbiter_sealed), \
-                 arbiter_confirmed_at = COALESCE($10, arbiter_confirmed_at) \
+                 arbiter_confirmed_at = COALESCE($10, arbiter_confirmed_at), \
+                 delivered_at = COALESCE($11, delivered_at) \
              WHERE id = $8 AND state = $7",
         )
         .bind(audit.to_state.as_str())
@@ -331,6 +335,7 @@ impl Store for PostgresStore {
         .bind(id)
         .bind(&update.arbiter_sealed)
         .bind(update.arbiter_confirmed_at)
+        .bind(update.delivered_at)
         .execute(&mut *tx)
         .await;
         let rows = match res {

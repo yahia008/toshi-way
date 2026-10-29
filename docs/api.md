@@ -102,6 +102,7 @@ Treat a key like a password. Keep it in your server's settings, never in a web p
   "your_role": "seller",
   "seller_node": "own",
   "arbiter_id": null,
+  "delivered_at": null,
   "fiat": null
 }
 ```
@@ -116,6 +117,7 @@ Treat a key like a password. Keep it in your server's settings, never in a web p
 | `invoice_expires_at` | After accepting, the buyer has 10 minutes to pay the invoice. |
 | `deadline_at` | The settle-by time: the escrow can be released until then; at it, a locked escrow is refunded. |
 | `seller_node` | `own`: paid straight to your node. `shared`: the service's node, which then holds the money and owes it to you (custodial). |
+| `delivered_at` | When the seller marked the escrow delivered (see [notes](#post-apiv1escrowsidnotes-scope-escrowswrite)), or `null`. A claim, not a payment: only the buyer's secret releases the money. |
 | `fiat` | What the sum was worth in a currency when you made the offer. Display only. |
 
 ### States

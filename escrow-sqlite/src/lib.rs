@@ -34,11 +34,12 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/009_payouts.sql"),
     include_str!("migrations/010_withdrawal_invoice_once.sql"),
     include_str!("migrations/011_withdrawal_pins.sql"),
+    include_str!("migrations/012_delivered.sql"),
 ];
 const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, arbiter_id, arbiter_key, arbiter_sealed, \
      arbiter_confirmed_at, node, amount_sats, \
      fiat_currency, fiat_amount_minor, fiat_rate_minor, fiat_quoted_at, fiat_source, description, payment_hash, \
-     invoice, invoice_expires_at, state, deadline_at, created_at, updated_at, reference, return_url";
+     invoice, invoice_expires_at, state, deadline_at, created_at, updated_at, reference, return_url, delivered_at";
 
 pub struct SqliteStore {
     pool: SqlitePool,
@@ -127,6 +128,7 @@ fn escrow_from_row(row: &SqliteRow) -> Result<Escrow, StoreError> {
         arbiter_key: row.try_get("arbiter_key").map_err(backend)?,
         arbiter_sealed: row.try_get("arbiter_sealed").map_err(backend)?,
         arbiter_confirmed_at: row.try_get("arbiter_confirmed_at").map_err(backend)?,
+        delivered_at: row.try_get("delivered_at").map_err(backend)?,
         node: node.parse::<NodeKind>().map_err(StoreError::Backend)?,
         amount_sats: row.try_get::<i64, _>("amount_sats").map_err(backend)? as u64,
         fiat: fiat_from_row(row)?,
@@ -190,7 +192,7 @@ fn node_state_from_str(s: &str) -> Result<NodeInvoiceState, StoreError> {
 impl Store for SqliteStore {
     async fn insert(&self, e: Escrow) -> Result<(), StoreError> {
         let res = sqlx::query(&format!(
-            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO escrows ({ESCROW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         ))
         .bind(&e.id)
         .bind(&e.buyer_id)
@@ -216,6 +218,7 @@ impl Store for SqliteStore {
         .bind(e.updated_at)
         .bind(&e.reference)
         .bind(&e.return_url)
+        .bind(e.delivered_at)
         .execute(&self.pool)
         .await;
         match res {
@@ -322,7 +325,8 @@ impl Store for SqliteStore {
                  invoice = COALESCE(?, invoice), \
                  invoice_expires_at = COALESCE(?, invoice_expires_at), \
                  arbiter_sealed = COALESCE(?, arbiter_sealed), \
-                 arbiter_confirmed_at = COALESCE(?, arbiter_confirmed_at) \
+                 arbiter_confirmed_at = COALESCE(?, arbiter_confirmed_at), \
+                 delivered_at = COALESCE(?, delivered_at) \
              WHERE id = ? AND state = ?",
         )
         .bind(audit.to_state.as_str())
@@ -333,6 +337,7 @@ impl Store for SqliteStore {
         .bind(update.invoice_expires_at)
         .bind(&update.arbiter_sealed)
         .bind(update.arbiter_confirmed_at)
+        .bind(update.delivered_at)
         .bind(id)
         .bind(expected.as_str())
         .execute(&mut *tx)

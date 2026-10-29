@@ -174,7 +174,7 @@ async fn an_old_database_is_migrated_without_losing_data() {
     drop(store);
     let mut conn = SqliteConnectOptions::new().filename(&path).connect().await.unwrap();
     let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&mut conn).await.unwrap();
-    assert_eq!(version, 11);
+    assert_eq!(version, 12);
 }
 
 #[tokio::test]
@@ -198,6 +198,7 @@ async fn concurrent_withdrawals_on_a_database_file_cannot_spend_the_same_sats_tw
             arbiter_key: None,
             arbiter_sealed: None,
             arbiter_confirmed_at: None,
+            delivered_at: None,
             node: NodeKind::Shared,
             amount_sats: 5_000,
             fiat: None,

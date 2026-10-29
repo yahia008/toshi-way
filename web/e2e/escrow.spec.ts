@@ -449,6 +449,11 @@ test("evidence: the seller marks delivery, both sides add evidence, and the arbi
   await expect(buyer.page.getByText("The box was empty when I opened it").first()).toBeVisible();
   await expect(seller.page.getByText("The box was empty when I opened it").first()).toBeVisible();
 
+  // The buyer's dashboard asks for their move, not just the escrow page.
+  await buyer.page.goto("/");
+  await expect(buyer.page.getByText("The seller says it was delivered")).toBeVisible();
+  await buyer.page.goBack();
+
   // An empty note is refused before it is sent.
   await buyer.page.getByRole("button", { name: "Add evidence" }).click();
   await expect(buyer.page.getByText("Write something first")).toBeVisible();
@@ -459,8 +464,8 @@ test("evidence: the seller marks delivery, both sides add evidence, and the arbi
   await expect(arbiter.page.getByText("Signed for by J. Okafor, tracking NG123").first()).toBeVisible();
   await expect(arbiter.page.getByText("The box was empty when I opened it").first()).toBeVisible();
   // They are on the history too, in the order they were said.
-  await expect(arbiter.page.getByText("Seller says it was delivered")).toBeVisible();
-  await expect(arbiter.page.getByText("Evidence added")).toBeVisible();
+  await expect(arbiter.page.getByText("Seller says it was delivered", { exact: true })).toBeVisible();
+  await expect(arbiter.page.getByText("Evidence added", { exact: true }).first()).toBeVisible();
 });
 
 test("arbitration: the arbiter refunds a disputed escrow to the buyer", async ({ browser }) => {
@@ -472,7 +477,8 @@ test("arbitration: the arbiter refunds a disputed escrow to the buyer", async ({
   await arbiter.page.getByRole("button", { name: "Refund the buyer" }).click();
   await arbiter.page.getByRole("button", { name: "Yes, refund the buyer" }).click();
   for (const p of [seller.page, buyer.page, arbiter.page]) await expect(stateBadge(p, "Refunded")).toBeVisible();
-  await expect(buyer.page.getByText("No proof of delivery.")).toBeVisible();
+  // The note appears in the history more than once (the decision, and the refund it caused).
+  await expect(buyer.page.getByText("No proof of delivery.").first()).toBeVisible();
 });
 
 test("arbitration: an arbiter without their private key on this device cannot decide, and a stranger is turned away", async ({ browser }) => {

@@ -146,6 +146,14 @@ async fn the_seller_marks_delivery_and_both_sides_see_it_without_any_state_chang
         assert_eq!(note["reason"], "Signed for by J. Okafor, tracking NG123");
         assert_eq!((note["from_state"].as_str(), note["to_state"].as_str()), (Some("LOCKED"), Some("LOCKED")));
     }
+    // The escrow itself says when delivery was claimed, for both sides and for the dashboard.
+    for who in [&seller, &buyer] {
+        let (_, e) = app.call(Method::GET, &format!("/api/v1/escrows/{id}"), Some(&who.token), None).await;
+        assert_eq!(e["delivered_at"], T0, "{e}");
+    }
+    // Saying it twice is refused, and evidence does not count as a delivery claim.
+    let (s, v) = app.note(&seller, &id, "delivered", "done again").await;
+    assert_eq!((s, code(&v)), (StatusCode::BAD_REQUEST, Some("invalid_request")), "{v}");
     // It moves no money: the node still holds the payment.
     assert_eq!(app.node.state(&p.hash()), Some(NodeInvoiceState::Accepted));
 
@@ -162,6 +170,8 @@ async fn both_sides_can_add_evidence_before_and_after_a_dispute_and_nobody_else_
 
     assert_eq!(app.note(&seller, &id, "evidence", "courier receipt: https://example.com/r/1").await.0, StatusCode::OK);
     assert_eq!(app.note(&buyer, &id, "evidence", "the box was empty").await.0, StatusCode::OK);
+    let (_, e) = app.call(Method::GET, &format!("/api/v1/escrows/{id}"), Some(&seller.token), None).await;
+    assert!(e["delivered_at"].is_null(), "evidence is not a delivery claim: {e}");
 
     let (s, _) = app.call(Method::POST, &format!("/api/v1/escrows/{id}/dispute"), Some(&buyer.token), Some(json!({"reason": "empty box"}))).await;
     assert_eq!(s, StatusCode::OK);

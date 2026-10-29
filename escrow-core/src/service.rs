@@ -220,6 +220,7 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
             arbiter_key: new.arbiter.map(|(_, key)| key),
             arbiter_sealed: None,
             arbiter_confirmed_at: None,
+            delivered_at: None,
             node,
             amount_sats: new.amount_sats,
             fiat: new.fiat,
@@ -540,6 +541,10 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
             if mine >= MAX_NOTES_PER_PARTY {
                 return Err(ServiceError::Invalid(format!("at most {MAX_NOTES_PER_PARTY} notes each")));
             }
+            if kind == "delivered" && e.delivered_at.is_some() {
+                return Err(ServiceError::Invalid("already marked delivered; add evidence instead".into()));
+            }
+            let update = EscrowUpdate { delivered_at: (kind == "delivered").then_some(now), ..Default::default() };
             let audit = AuditEntry {
                 escrow_id: e.id.clone(),
                 actor: actor.to_string(),
@@ -549,7 +554,7 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
                 reason: text.to_string(),
                 created_at: now,
             };
-            match self.store.transition(&e.id, e.state, EscrowUpdate::default(), audit).await {
+            match self.store.transition(&e.id, e.state, update, audit).await {
                 Err(StoreError::Conflict) => continue,
                 other => return Ok(other?),
             }

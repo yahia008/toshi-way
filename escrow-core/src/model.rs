@@ -111,6 +111,9 @@ pub struct Escrow {
     /// When the arbiter confirmed they can decrypt `arbiter_sealed` and that it matches the
     /// payment hash. Until then the seller should not count on arbitration.
     pub arbiter_confirmed_at: Option<i64>,
+    /// When the seller said the goods or work were delivered. A claim, not a payment: only the
+    /// buyer's secret releases the money.
+    pub delivered_at: Option<i64>,
     /// Which node holds this escrow's invoice. Fixed at creation, so changing the seller's node
     /// settings later cannot strand an escrow that is in flight.
     pub node: NodeKind,

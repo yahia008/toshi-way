@@ -170,6 +170,7 @@ async fn concurrent_withdrawals_cannot_spend_the_same_sats_twice() {
             arbiter_key: None,
             arbiter_sealed: None,
             arbiter_confirmed_at: None,
+            delivered_at: None,
             node: NodeKind::Shared,
             amount_sats: 5_000,
             fiat: None,

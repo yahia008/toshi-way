@@ -36,6 +36,8 @@ export interface Escrow {
   arbiter_fingerprint: string | null;
   arbiter_sealed: boolean;
   arbiter_confirmed_at: number | null;
+  /** When the seller said it was delivered (a claim: only the buyer's secret releases the money), or `null`. */
+  delivered_at: number | null;
   /** What the sum was worth when the offer was made. Display only. */
   fiat: {
     currency: string;

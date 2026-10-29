@@ -15,6 +15,7 @@ fn escrow(id: &str) -> Escrow {
         arbiter_key: None,
         arbiter_sealed: None,
         arbiter_confirmed_at: None,
+        delivered_at: None,
         node: NodeKind::Shared,
         fiat: None,
         reference: None,
@@ -70,6 +71,7 @@ pub async fn store_contract(store: &dyn Store) {
     let update = EscrowUpdate {
         arbiter_sealed: None,
         arbiter_confirmed_at: None,
+        delivered_at: None,
         buyer_id: None,
         payment_hash: Some(hash),
         invoice: Some("lnbcrt1abc".into()),
@@ -167,6 +169,15 @@ pub async fn store_contract(store: &dyn Store) {
     let confirm = EscrowUpdate { arbiter_confirmed_at: Some(47), ..Default::default() };
     let e = store.transition("arb", InvoiceIssued, confirm, audit("arb", InvoiceIssued, InvoiceIssued, 47)).await.unwrap();
     assert_eq!((e.state, e.arbiter_confirmed_at, e.arbiter_sealed.as_deref()), (InvoiceIssued, Some(47), Some("sealed-blob")));
+
+    // A delivery claim is a same-state update: stored, kept by later transitions, and absent means absent.
+    assert_eq!(e.delivered_at, None);
+    let delivered = EscrowUpdate { delivered_at: Some(48), ..Default::default() };
+    let e = store.transition("arb", InvoiceIssued, delivered, audit("arb", InvoiceIssued, InvoiceIssued, 48)).await.unwrap();
+    assert_eq!((e.state, e.delivered_at), (InvoiceIssued, Some(48)));
+    let later = store.transition("arb", InvoiceIssued, EscrowUpdate::default(), audit("arb", InvoiceIssued, Locked, 49)).await.unwrap();
+    assert_eq!((later.state, later.delivered_at), (Locked, Some(48)));
+    assert_eq!(store.get("arb").await.unwrap().unwrap().delivered_at, Some(48));
 
     // A fiat quote is stored exactly as given, survives later transitions, and absent means absent.
     let mut priced = escrow("priced");

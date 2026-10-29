@@ -77,6 +77,7 @@ pub(crate) fn escrow_view(e: &Escrow, party: Party) -> Value {
         "arbiter_fingerprint": e.arbiter_key.as_deref().and_then(arbiter::fingerprint),
         "arbiter_sealed": e.arbiter_sealed.is_some(),
         "arbiter_confirmed_at": e.arbiter_confirmed_at,
+        "delivered_at": e.delivered_at,
         // What the sum was worth when the offer was made, for display only. Locked at creation.
         "fiat": e.fiat.as_ref().map(|f| json!({
             "currency": f.currency,
