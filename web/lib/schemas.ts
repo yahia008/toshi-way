@@ -59,6 +59,8 @@ export const Escrow = z.object({
   arbiter_sealed: z.boolean().default(false),
   /** When the arbiter confirmed they can open it; until then the seller should not rely on arbitration. */
   arbiter_confirmed_at: unixSecs.nullable().default(null),
+  /** When the seller said it was delivered. A claim: only the buyer's secret releases the money. */
+  delivered_at: unixSecs.nullable().default(null),
   /**
    * What the sum was worth in a currency when the offer was made: display only, locked at creation.
    * Amounts are in the currency's minor unit (cents, kobo, ...).
@@ -273,6 +275,12 @@ export const SecretInput = z
   .trim()
   .toLowerCase()
   .regex(/^[0-9a-f]{64}$/, "The secret is exactly 64 hex characters (0-9, a-f)");
+
+export const NoteForm = z
+  .string()
+  .trim()
+  .min(1, "Write something first")
+  .max(500, "At most 500 characters");
 
 export const DisputeForm = z
   .string()

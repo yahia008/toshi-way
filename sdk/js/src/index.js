@@ -64,6 +64,8 @@ export class Toshi {
       get: (id) => this.#request("GET", `/api/v1/escrows/${encodeURIComponent(id)}`),
       list: () => this.#request("GET", "/api/v1/escrows"),
       events: (id) => this.#request("GET", `/api/v1/escrows/${encodeURIComponent(id)}/events`),
+      note: (id, kind, text) =>
+        this.#request("POST", `/api/v1/escrows/${encodeURIComponent(id)}/notes`, { body: { kind, text }, retry: false }),
       cancel: (id) => this.#request("POST", `/api/v1/escrows/${encodeURIComponent(id)}/cancel`, { retry: false }),
       waitFor: (id, until, options) => this.#waitFor(id, until, options),
     };

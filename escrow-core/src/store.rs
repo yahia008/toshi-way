@@ -29,6 +29,7 @@ pub enum StoreError {
 pub struct EscrowUpdate {
     pub arbiter_sealed: Option<String>,
     pub arbiter_confirmed_at: Option<i64>,
+    pub delivered_at: Option<i64>,
     /// Set when the first user to accept an open offer becomes its buyer.
     pub buyer_id: Option<String>,
     pub payment_hash: Option<PaymentHash>,
@@ -408,6 +409,9 @@ impl Store for MemoryStore {
         }
         if update.arbiter_confirmed_at.is_some() {
             e.arbiter_confirmed_at = update.arbiter_confirmed_at;
+        }
+        if update.delivered_at.is_some() {
+            e.delivered_at = update.delivered_at;
         }
         if update.payment_hash.is_some() {
             e.payment_hash = update.payment_hash;

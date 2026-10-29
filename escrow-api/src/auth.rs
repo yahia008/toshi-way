@@ -180,6 +180,7 @@ mod tests {
             arbiter_key: None,
             arbiter_sealed: None,
             arbiter_confirmed_at: None,
+            delivered_at: None,
             node: escrow_core::model::NodeKind::Shared,
             fiat: None,
             reference: None,

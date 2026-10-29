@@ -43,7 +43,11 @@ export function Timeline({ events, escrow }: { events: EscrowEvents | null; escr
           ? "Arbiter confirmed they can release this escrow"
           : a.action === "arbiter_decision"
             ? "Arbiter decided"
-            : (a.to_state && toStateText[a.to_state]) || `${a.from_state ?? "?"} → ${a.to_state ?? "?"}`,
+            : a.action === "delivered"
+              ? "Seller says it was delivered"
+              : a.action === "evidence"
+                ? "Evidence added"
+                : (a.to_state && toStateText[a.to_state]) || `${a.from_state ?? "?"} → ${a.to_state ?? "?"}`,
       detail: [a.actor && `by ${who(a.actor)}`, a.reason].filter(Boolean).join(" · "),
       source: "app" as const,
     })),

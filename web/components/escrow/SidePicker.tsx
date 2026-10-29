@@ -176,6 +176,11 @@ export const escrowTypes = [
     dealTitle: "P2P asset sale",
     template:
       "Buyer receives:\n\u2022 [item being sold]\n\u2022 Condition: [new / used]\n\u2022 Transfer method: [details]\n\u2022 Buyer confirms receipt before funds release",
+    evidence: [
+      "A payment receipt or on-chain transaction id that matches the agreed amount and recipient",
+      "Proof the item was handed over, such as a courier receipt",
+      "Note: a bank transfer can be reversed later, so it counts as weaker proof",
+    ],
     title: "P2P asset sale",
     body: "Personal goods or a crypto exchange",
     placeholder: "e.g. Vintage watch, sold as described, shipped insured",
@@ -185,6 +190,11 @@ export const escrowTypes = [
     dealTitle: "Freelance / services",
     template:
       "Seller delivers:\n\u2022 [the work, e.g. 5-page website]\n\u2022 Revisions included: [number]\n\u2022 Deadline: [date]\n\u2022 Buyer releases the funds once the work is accepted",
+    evidence: [
+      "The delivered files or a link to the finished work",
+      "The buyer's messages accepting it or asking for revisions",
+      "How many revisions were agreed and used",
+    ],
     title: "Freelance / services",
     body: "Work delivered for payment",
     placeholder:
@@ -195,6 +205,11 @@ export const escrowTypes = [
     dealTitle: "Cargo / goods shipment",
     template:
       "Seller ships:\n\u2022 [goods and quantity]\n\u2022 Shipping method and tracking: [details]\n\u2022 Delivery address and date: [details]\n\u2022 Buyer releases the funds once the goods arrive as described",
+    evidence: [
+      "The courier's signed delivery record or tracking showing delivered",
+      "Photos of the goods at dispatch and on arrival",
+      "Proof it went to the agreed address",
+    ],
     title: "Cargo / goods shipment",
     body: "Physical goods, shipped and tracked",
     placeholder: "e.g. 20 boxes of coffee beans, tracked delivery to Lagos",
@@ -204,6 +219,11 @@ export const escrowTypes = [
     dealTitle: "Digital asset transfer",
     template:
       "Seller transfers:\n\u2022 [domain, website, NFT or account]\n\u2022 Transfer method: [registrar / marketplace / credentials]\n\u2022 Everything needed to take full control\n\u2022 Buyer releases the funds once control is confirmed",
+    evidence: [
+      "A registrar or marketplace record showing the new owner",
+      "Proof the seller kept no way back in, such as changed credentials",
+      "Screenshots of the transfer being completed",
+    ],
     title: "Digital asset transfer",
     body: "Domains, websites, NFTs, accounts",
     placeholder:
@@ -214,6 +234,11 @@ export const escrowTypes = [
     dealTitle: "Vehicle sale",
     template:
       "Seller hands over:\n\u2022 [make, model, year, mileage]\n\u2022 Condition and known faults: [details]\n\u2022 Papers and keys included\n\u2022 Buyer releases the funds after inspection and handover",
+    evidence: [
+      "A signed handover form and the transfer of title",
+      "Photos or video of the vehicle at handover",
+      "Papers and keys listed as handed over",
+    ],
     title: "Vehicle sale",
     body: "Cars, bikes, boats — private sale",
     placeholder:
@@ -224,6 +249,11 @@ export const escrowTypes = [
     dealTitle: "Property deal",
     template:
       "Deal covers:\n\u2022 [property or deposit and address]\n\u2022 Amount and what it secures: [details]\n\u2022 Conditions for refund or release: [details]\n\u2022 Buyer releases the funds once the terms are met",
+    evidence: [
+      "A signed agreement setting out the conditions",
+      "A record that the conditions were met, such as a handover receipt",
+      "Note: the arbiter cannot settle legal ownership, so keep this to deposits and handovers",
+    ],
     title: "Property / real estate",
     body: "Deposits or private property deals",
     placeholder: "e.g. Rental deposit for a 2-bed flat, refundable on handover",
@@ -256,6 +286,27 @@ const typeIcons: Record<string, ReactNode> = {
   ),
   property: <path d="M4 11 12 4l8 7M6 9.5V20h12V9.5M10 20v-6h4v6" />,
 };
+
+/** If it comes to a dispute, what the arbiter will look for. Shown while the seller sets the deal up. */
+export function EvidenceGuide({ type }: { type: EscrowType }) {
+  const t = escrowTypes.find((x) => x.id === type)!;
+  return (
+    <div className="rounded-xl border border-neutral-200 p-4 text-sm dark:border-neutral-800">
+      <div className="font-semibold">
+        If there&apos;s a dispute, an arbiter will look for
+      </div>
+      <ul className="mt-2 list-disc space-y-1 pl-5 text-neutral-600 dark:text-neutral-400">
+        {t.evidence.map((e) => (
+          <li key={e}>{e}</li>
+        ))}
+      </ul>
+      <p className="mt-2 text-xs text-neutral-500">
+        Either side can add this evidence on the escrow page once the money is
+        locked.
+      </p>
+    </div>
+  );
+}
 
 export type EscrowType = (typeof escrowTypes)[number]["id"];
 

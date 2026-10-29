@@ -50,6 +50,14 @@ export function todoFor(e: Escrow, now: number): Todo | null {
         return mk("pay", "Pay the invoice", "Your payment is locked, not sent, once you pay.", e.invoice_expires_at ?? e.deadline_at);
       }
       if (e.state === "LOCKED") {
+        if (e.delivered_at) {
+          return mk(
+            "handover",
+            "The seller says it was delivered",
+            "Release if you have it. If not, open a dispute and add your evidence before the deadline, or you are refunded.",
+            e.deadline_at,
+          );
+        }
         return mk("handover", "Release when you have the goods", "Show your release QR at handover, or open a dispute.", e.deadline_at);
       }
       return null;
@@ -58,10 +66,12 @@ export function todoFor(e: Escrow, now: number): Todo | null {
         const waitForArbiter = e.arbiter_id && !e.arbiter_confirmed_at;
         return mk(
           "deliver",
-          "Deliver, then release with the buyer's secret",
-          waitForArbiter
-            ? "The arbiter hasn't confirmed yet: consider waiting before you start."
-            : "The funds are locked, so it is safe to start. Release before the deadline.",
+          e.delivered_at ? "Delivery claimed: get the buyer's release" : "Deliver, then release with the buyer's secret",
+          e.delivered_at
+            ? "Ask the buyer for their release QR. If they stay quiet, open a dispute with your proof before the deadline."
+            : waitForArbiter
+              ? "The arbiter hasn't confirmed yet: consider waiting before you start."
+              : "The funds are locked, so it is safe to start. Release before the deadline.",
           e.deadline_at,
         );
       }
@@ -97,6 +107,7 @@ export function nextLine(e: Escrow): string {
       return role === "buyer" ? "Waiting for your payment" : "Waiting for the buyer's payment";
     case "LOCKED":
       if (role === "arbiter") return e.arbiter_confirmed_at ? "Nothing to do unless a dispute opens" : "Waiting for you to confirm";
+      if (e.delivered_at) return role === "buyer" ? "The seller says it's delivered: release or dispute" : "Delivery claimed: waiting for the buyer";
       return role === "buyer" ? "Funds locked: release at handover" : "Funds locked: deliver, then release";
     case "DISPUTED":
       return role === "arbiter" ? "Waiting for your decision" : e.arbiter_id ? "Waiting for the arbiter" : "Waiting for the operator";

@@ -11,6 +11,7 @@ import { buildReleaseLink, generateSecret, hashSecret, loadSecret, saveSecret } 
 import { getWebLN, payWithWebLN } from "@/lib/webln";
 import { Button, Card, ConfirmButton, CopyButton, CopyField, Countdown, Field, inputClass, Notice, Spinner } from "../ui";
 import { useStoredSecret } from "./hooks";
+import { EvidenceList, NotesBox } from "./Notes";
 import { NairaPay, PayChoice } from "./NairaPay";
 import { Scanner } from "./Scanner";
 
@@ -67,8 +68,8 @@ export function EscrowPanel({ escrow, setEscrow, refresh, linkSecret, events }: 
   let body: ReactNode;
   if (role === "operator") body = <OperatorPanel escrow={escrow} actions={actions} />;
   else if (role === "arbiter") body = <ArbiterPanel escrow={escrow} actions={actions} events={events ?? null} />;
-  else if (role === "buyer") body = <BuyerPanel escrow={escrow} actions={actions} linkSecret={linkSecret} />;
-  else body = <SellerPanel escrow={escrow} actions={actions} linkSecret={linkSecret} />;
+  else if (role === "buyer") body = <BuyerPanel escrow={escrow} actions={actions} linkSecret={linkSecret} events={events ?? null} />;
+  else body = <SellerPanel escrow={escrow} actions={actions} linkSecret={linkSecret} events={events ?? null} />;
 
   const releasable = escrow.state === "LOCKED" || escrow.state === "DISPUTED";
 
@@ -150,7 +151,7 @@ function FinalSummary({ escrow }: { escrow: Escrow }) {
 
 // Buyer
 
-function BuyerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions: Actions; linkSecret: string | null }) {
+function BuyerPanel({ escrow, actions, linkSecret, events }: { escrow: Escrow; actions: Actions; linkSecret: string | null; events: EscrowEvents | null }) {
   // Bumped after the secret is (re)generated so the stored-secret check runs again.
   const [secretVersion, setSecretVersion] = useState(0);
   const stored = useStoredSecret(escrow.id, escrow.payment_hash, secretVersion);
@@ -251,6 +252,7 @@ function BuyerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions: 
               <ReleaseForm escrow={escrow} actions={actions} />
             </>
           )}
+          <NotesBox escrow={escrow} events={events} run={actions.run} busy={actions.busy} />
           {escrow.state === "LOCKED" && <DisputeBox escrow={escrow} actions={actions} />}
           <p className="text-xs text-neutral-500">
             Once the funds are locked only the seller can cancel. If nothing happens, you are refunded at the
@@ -427,7 +429,7 @@ function ReleaseHandover({ escrow, secret, actions }: { escrow: Escrow; secret: 
 
 // Seller
 
-function SellerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions: Actions; linkSecret: string | null }) {
+function SellerPanel({ escrow, actions, linkSecret, events }: { escrow: Escrow; actions: Actions; linkSecret: string | null; events: EscrowEvents | null }) {
   const refund = (
     <ConfirmButton
       confirmText={
@@ -512,6 +514,7 @@ function SellerPanel({ escrow, actions, linkSecret }: { escrow: Escrow; actions:
           <div className="flex flex-wrap gap-2">
             {refund}
           </div>
+          <NotesBox escrow={escrow} events={events} run={actions.run} busy={actions.busy} />
           {escrow.state === "LOCKED" && <DisputeBox escrow={escrow} actions={actions} />}
         </div>
       );
@@ -791,6 +794,7 @@ function ArbiterPanel({ escrow, actions, events }: { escrow: Escrow; actions: Ac
             decide before the deadline: after it the buyer is refunded automatically.
           </Notice>
           <Reported escrow={escrow} events={events} />
+          <EvidenceList escrow={escrow} events={events} title="Delivery and evidence from both sides" />
           <Deadline escrow={escrow} />
           <Field label="Your note (shown in the history)" hint="Optional. Why you decided this way.">
             <textarea

@@ -36,6 +36,8 @@ export interface Escrow {
   arbiter_fingerprint: string | null;
   arbiter_sealed: boolean;
   arbiter_confirmed_at: number | null;
+  /** When the seller said it was delivered (a claim: only the buyer's secret releases the money), or `null`. */
+  delivered_at: number | null;
   /** What the sum was worth when the offer was made. Display only. */
   fiat: {
     currency: string;
@@ -110,6 +112,8 @@ export class Toshi {
     get(id: string): Promise<Escrow>;
     list(): Promise<EscrowList>;
     events(id: string): Promise<EscrowHistory>;
+    /** Say it was delivered (`delivered`, seller only) or add evidence (`evidence`) on a locked or disputed escrow. Moves no money. */
+    note(id: string, kind: "delivered" | "evidence", text: string): Promise<Escrow>;
     /** Cancel the offer. If the buyer has already paid, this refunds them. Only the seller (or a key with `escrows:write`) can. */
     cancel(id: string): Promise<Escrow>;
     /** Poll until the escrow is in one of the states (or `until(escrow)` is true). Webhooks are better in production. */

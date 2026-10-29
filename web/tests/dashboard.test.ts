@@ -32,6 +32,12 @@ describe("whose move is it", () => {
     expect(pay?.kind).toBe("pay");
     expect(pay?.by).toBe(NOW + 300); // the invoice expires before the deadline: that is the urgent time
     expect(todoFor(escrow({ state: "LOCKED" }), NOW)?.kind).toBe("handover");
+    // Once the seller claims delivery, the buyer is told, and the seller's line changes too.
+    const claimed = escrow({ state: "LOCKED", delivered_at: NOW - 60 });
+    expect(todoFor(claimed, NOW)?.title).toBe("The seller says it was delivered");
+    expect(nextLine(claimed)).toMatch(/delivered: release or dispute/);
+    expect(todoFor(escrow({ state: "LOCKED", your_role: "seller", delivered_at: NOW - 60 }), NOW)?.title).toMatch(/Delivery claimed/);
+    expect(nextLine(escrow({ state: "LOCKED", your_role: "seller", delivered_at: NOW - 60 }))).toBe("Delivery claimed: waiting for the buyer");
   });
 
   it("is not the seller's while they wait for payment, only once the funds are locked", () => {

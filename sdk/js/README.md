@@ -44,6 +44,7 @@ Make the API key on the web app's API page. Keep it on your server.
 | `toshi.escrows.get(id)` | read one escrow | `escrows:read` |
 | `toshi.escrows.list()` | everything in play plus the newest 100 finished, with `totals` | `escrows:read` |
 | `toshi.escrows.events(id)` | the escrow's history | `escrows:read` |
+| `toshi.escrows.note(id, kind, text)` | say it was delivered (`"delivered"`) or add evidence (`"evidence"`) while the money is locked. Moves no money | `escrows:write` |
 | `toshi.escrows.cancel(id)` | withdraw the offer (refunds the buyer if they have paid) | `escrows:write` |
 | `toshi.escrows.waitFor(id, states)` | poll until the escrow reaches a state. Fine for scripts and tests; use webhooks in production | `escrows:read` |
 

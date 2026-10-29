@@ -429,6 +429,45 @@ test("arbitration: the arbiter releases a disputed escrow to the seller, and the
   expect(JSON.parse(accept.body!).sealed_secret).toMatch(/^[A-Za-z0-9+/=]{160,}$/);
 });
 
+test("evidence: the seller marks delivery, both sides add evidence, and the arbiter reads it all when deciding", async ({ browser }) => {
+  const { arbiter, seller, buyer } = await arbitratedLocked(browser, "e2e evidence");
+
+  // Before anything is said, the page explains what the note is for.
+  await expect(seller.page.getByText("Delivered? Say so, with proof")).toBeVisible();
+
+  // The seller says it was delivered, with proof. Nothing is released: the money stays locked.
+  await seller.page.getByLabel("Your note").fill("Signed for by J. Okafor, tracking NG123");
+  await seller.page.getByRole("button", { name: "Mark as delivered" }).click();
+  await expect(seller.page.getByText("You marked this delivered.")).toBeVisible();
+  await expect(stateBadge(seller.page, "Funds locked")).toBeVisible();
+
+  // The buyer is told, sees the proof, and answers with their side.
+  await expect(buyer.page.getByText("The seller says this was delivered.")).toBeVisible();
+  await expect(buyer.page.getByText("Signed for by J. Okafor, tracking NG123").first()).toBeVisible();
+  await buyer.page.getByLabel("Your note").fill("The box was empty when I opened it");
+  await buyer.page.getByRole("button", { name: "Add evidence" }).click();
+  await expect(buyer.page.getByText("The box was empty when I opened it").first()).toBeVisible();
+  await expect(seller.page.getByText("The box was empty when I opened it").first()).toBeVisible();
+
+  // The buyer's dashboard asks for their move, not just the escrow page.
+  await buyer.page.goto("/");
+  await expect(buyer.page.getByText("The seller says it was delivered")).toBeVisible();
+  await buyer.page.goBack();
+
+  // An empty note is refused before it is sent.
+  await buyer.page.getByRole("button", { name: "Add evidence" }).click();
+  await expect(buyer.page.getByText("Write something first")).toBeVisible();
+
+  // When the seller disputes, the arbiter finds both sides' words right where they decide.
+  await openDispute(seller, "The buyer has the parcel and will not release.");
+  await expect(arbiter.page.getByText("Delivery and evidence from both sides")).toBeVisible();
+  await expect(arbiter.page.getByText("Signed for by J. Okafor, tracking NG123").first()).toBeVisible();
+  await expect(arbiter.page.getByText("The box was empty when I opened it").first()).toBeVisible();
+  // They are on the history too, in the order they were said.
+  await expect(arbiter.page.getByText("Seller says it was delivered", { exact: true })).toBeVisible();
+  await expect(arbiter.page.getByText("Evidence added", { exact: true }).first()).toBeVisible();
+});
+
 test("arbitration: the arbiter refunds a disputed escrow to the buyer", async ({ browser }) => {
   const { arbiter, seller, buyer } = await arbitratedLocked(browser, "e2e arbiter refund");
   await openDispute(buyer, "Nothing arrived.");
@@ -438,7 +477,8 @@ test("arbitration: the arbiter refunds a disputed escrow to the buyer", async ({
   await arbiter.page.getByRole("button", { name: "Refund the buyer" }).click();
   await arbiter.page.getByRole("button", { name: "Yes, refund the buyer" }).click();
   for (const p of [seller.page, buyer.page, arbiter.page]) await expect(stateBadge(p, "Refunded")).toBeVisible();
-  await expect(buyer.page.getByText("No proof of delivery.")).toBeVisible();
+  // The note appears in the history more than once (the decision, and the refund it caused).
+  await expect(buyer.page.getByText("No proof of delivery.").first()).toBeVisible();
 });
 
 test("arbitration: an arbiter without their private key on this device cannot decide, and a stranger is turned away", async ({ browser }) => {
