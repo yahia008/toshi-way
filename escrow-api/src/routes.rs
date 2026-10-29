@@ -562,7 +562,8 @@ where
 {
     auth.require(Scope::EscrowsRead)?;
     let user = auth.user;
-    load(&st, &id, &user).await?;
+    let (escrow, _) = load(&st, &id, &user).await?;
+    let decide_after = st.service.decide_after(&escrow).await?;
     let audit: Vec<Value> = st
         .service
         .audit_log(&id)
@@ -582,7 +583,8 @@ where
         .into_iter()
         .map(|n| json!({ "node_invoice_state": n.node_invoice_state.as_str(), "at": n.received_at }))
         .collect();
-    Ok(Json(json!({ "audit": audit, "node_events": node })))
+    // Set while a dispute is waiting for the other side to answer: an arbiter cannot decide before it.
+    Ok(Json(json!({ "audit": audit, "node_events": node, "decide_after": decide_after })))
 }
 
 pub async fn operator_list<A, S>(

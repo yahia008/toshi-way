@@ -289,6 +289,8 @@ export function describeError(err: unknown): string {
     case "invalid_invoice":
     case "invalid_request":
       return sentence(err.message);
+    case "response_window":
+      return "The other side is still within the time they have to answer the dispute. You can decide when it ends, or as soon as they add their side.";
     case "pin_not_set":
       return "Set a withdrawal PIN first (on this page), then try again.";
     case "pin_required":

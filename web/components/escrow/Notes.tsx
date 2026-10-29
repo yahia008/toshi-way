@@ -9,7 +9,8 @@ import {
   type Escrow,
   type EscrowEvents,
 } from "@/lib/schemas";
-import { Button, Field, inputClass, Notice } from "../ui";
+import { useServerNow } from "@/lib/clock";
+import { Button, Countdown, Field, inputClass, Notice } from "../ui";
 
 type Run = (name: string, fn: () => Promise<Escrow>) => Promise<boolean>;
 
@@ -27,6 +28,72 @@ const who = (escrow: Escrow, actor: string) =>
     : actor === escrow.buyer_id
       ? "The buyer"
       : "A party";
+
+/** Whether a dispute is still inside the other side's time to answer, and until when. */
+export function useResponseWindow(
+  events: EscrowEvents | null | undefined,
+): number | null {
+  const now = useServerNow();
+  const at = events?.decide_after ?? null;
+  return at !== null && now !== null && now < at ? at : null;
+}
+
+/**
+ * After a dispute opens, the side that did not open it gets time to answer before an arbiter may
+ * decide. It ends early the moment they add anything, so adding their side is the way to be heard.
+ */
+export function ResponseWindow({
+  escrow,
+  events,
+}: {
+  escrow: Escrow;
+  events: EscrowEvents | null | undefined;
+}) {
+  const until = useResponseWindow(events);
+  if (until === null || escrow.state !== "DISPUTED") return null;
+  const opener = [...(events?.audit ?? [])]
+    .reverse()
+    .find((a) => a.action === "dispute")?.actor;
+  const mine =
+    escrow.your_role === "seller"
+      ? escrow.seller_id
+      : escrow.your_role === "buyer"
+        ? escrow.buyer_id
+        : null;
+  const iOpened = mine !== null && opener === mine;
+  const arbiter = escrow.your_role === "arbiter";
+  return (
+    <div className="space-y-2">
+      <Notice tone="info">
+        {arbiter ? (
+          <>
+            <strong>
+              The other side is still within their time to answer.
+            </strong>{" "}
+            You can decide when it ends, or as soon as they add their side.
+          </>
+        ) : iOpened ? (
+          <>
+            <strong>The other side has time to answer your dispute.</strong> An
+            arbiter can decide once it ends, or as soon as they add their side.
+            Add your own evidence meanwhile.
+          </>
+        ) : (
+          <>
+            <strong>A dispute was opened against you.</strong> Add your side
+            below now. Until you do, the arbiter has to wait for the time to run
+            out, and then decides on what the other side has said.
+          </>
+        )}
+      </Notice>
+      <Countdown
+        until={until}
+        label="An arbiter can decide in"
+        endedText="Now"
+      />
+    </div>
+  );
+}
 
 /** The delivery claim and evidence so far, for whoever has to decide. Read-only. */
 export function EvidenceList({
@@ -96,6 +163,7 @@ export function NotesBox({
 
   return (
     <div className="space-y-4">
+      <ResponseWindow escrow={escrow} events={events} />
       {delivered && !seller && (
         <Notice tone="warn">
           <strong>The seller says this was delivered.</strong> If you have what

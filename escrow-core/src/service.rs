@@ -28,12 +28,25 @@ pub enum ServiceError {
     WrongPreimage,
     #[error("the settle-by deadline has passed")]
     TooLate,
+    /// An arbiter tried to decide before the other side had its chance to answer the dispute.
+    #[error("the other side has until {0} to respond to the dispute")]
+    TooEarly(i64),
     #[error("payment hash is already used by another escrow")]
     HashInUse,
     #[error("node error: {0}")]
     Adapter(#[from] AdapterError),
     #[error("store error: {0}")]
     Store(StoreError),
+}
+
+/// The longest an arbiter waits, after a dispute opens, for the other side to answer.
+pub const RESPONSE_WINDOW_MAX_SECS: i64 = 3600;
+
+/// How long the other side gets to answer a dispute opened at `disputed_at`: a quarter of the time
+/// left until the deadline, at most [`RESPONSE_WINDOW_MAX_SECS`]. A share of what is left, so a short
+/// hold keeps room for the decision itself.
+pub fn response_window_secs(disputed_at: i64, deadline_at: i64) -> i64 {
+    ((deadline_at - disputed_at).max(0) / 4).min(RESPONSE_WINDOW_MAX_SECS)
 }
 
 /// How many delivery and evidence notes one person may add to one escrow.
@@ -459,6 +472,11 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
         if now >= e.deadline_at {
             return Err(ServiceError::TooLate);
         }
+        if let Some(at) = self.decide_after(&e).await? {
+            if now < at {
+                return Err(ServiceError::TooEarly(at));
+            }
+        }
         // Put the decision on the record before touching the node. The node reports the settlement
         // or cancellation itself and can win the race to record the state change, which would
         // credit "the node" and drop the arbiter's name and note.
@@ -477,6 +495,26 @@ impl<A: NodeDirectory, S: Store> EscrowService<A, S> {
             Decision::Release(p) => self.release_as(id, &p, arbiter, &reason(verb), now).await,
             Decision::Refund => self.cancel(id, arbiter, &reason(verb), now).await,
         }
+    }
+
+    /// The earliest an arbiter may decide a dispute, or `None` when they may decide now. The side that
+    /// did not open the dispute gets a window to answer; it ends early the moment they have added
+    /// anything (a delivery claim or evidence), since they have then had their say.
+    pub async fn decide_after(&self, e: &Escrow) -> Result<Option<i64>, ServiceError> {
+        if e.state != EscrowState::Disputed {
+            return Ok(None);
+        }
+        let log = self.store.audit_log(&e.id).await?;
+        let Some(opened) = log.iter().rev().find(|a| a.action == "dispute") else {
+            return Ok(None);
+        };
+        let other_side_spoke = log
+            .iter()
+            .any(|a| a.actor != opened.actor && matches!(a.action.as_str(), "delivered" | "evidence"));
+        if other_side_spoke {
+            return Ok(None);
+        }
+        Ok(Some(opened.created_at + response_window_secs(opened.created_at, e.deadline_at)))
     }
 
     /// Add the arbiter's decision to the audit log without changing the state. Repeating the same

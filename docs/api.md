@@ -174,7 +174,9 @@ Your escrows, newest first: **every one still in play plus the newest 100 that h
 To find an escrow by your order number, list and match on `reference`.
 
 ### `GET /api/v1/escrows/{id}/events` (scope `escrows:read`)
-The escrow's history: `audit` (each change: `actor`, `action`, `from_state`, `to_state`, `reason`, `at`) and `node_events` (what the Lightning node reported, with its time).
+The escrow's history: `audit` (each change: `actor`, `action`, `from_state`, `to_state`, `reason`, `at`) and `node_events` (what the Lightning node reported, with its time). `decide_after` is a unix time while a dispute is waiting for the other side to answer (see below), and `null` otherwise.
+
+**The other side's time to answer.** When a dispute opens, an arbiter cannot decide at once: the side that did not open it gets a quarter of the time left until the deadline, at most an hour. It ends early the moment that side adds a note (`delivered` or `evidence`), so adding your side is the way to be heard. An arbiter who decides sooner gets `409 response_window`. The window always ends before the deadline, so there is time left to decide.
 
 ### `GET /api/v1/arbiter/default`
 The platform's own arbiter: `{ "id": "u_...", "fingerprint": "..." }`, or both `null` when the server has none (or its key is not set up yet). Compare the fingerprint with the one the operator publishes. It is the arbiter an escrow gets when you name none and do not set `no_arbiter`. The buyer's release secret is sealed to its key like any arbiter's, so the buyer's page must seal to it when accepting.

@@ -298,6 +298,15 @@ async fn a_disputed_escrow_is_released_to_the_seller_on_the_arbiters_say_so() {
     assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::CONFLICT, Some("invalid_state")));
     app.dispute(&seller, &id).await;
 
+    // The buyer has not answered the dispute yet, so the arbiter has to wait: a quarter of the hold
+    // that was left (3600 s), so 900 s. Nothing is decided in the meantime.
+    let (s, v) = app.decide(&judge, &id, json!({"decision": "refund"})).await;
+    assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::CONFLICT, Some("response_window")), "{v}");
+    assert_eq!(app.state(&seller.token, &id).await, "DISPUTED");
+    let (_, ev) = app.call(Method::GET, &format!("/api/v1/escrows/{id}/events"), Some(&seller.token), None).await;
+    assert_eq!(ev["decide_after"], T0 + 900, "{ev}");
+    app.clock.fetch_add(901, Ordering::SeqCst);
+
     // Bad requests change nothing.
     let wrong = hex::encode(secret(9).as_bytes());
     for (body, status, code) in [
@@ -336,6 +345,17 @@ async fn a_disputed_escrow_is_refunded_to_the_buyer_on_the_arbiters_say_so() {
     let p = secret(1);
     let id = app.locked(&seller, &buyer, &judge, &p).await;
     app.dispute(&buyer, &id).await;
+
+    // Until the seller answers, the arbiter waits. The moment the seller adds their side the wait is over.
+    let (s, v) = app.decide(&judge, &id, json!({"decision": "refund"})).await;
+    assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::CONFLICT, Some("response_window")), "{v}");
+    let (s, v) = app
+        .call(Method::POST, &format!("/api/v1/escrows/{id}/notes"), Some(&seller.token), Some(json!({"kind": "evidence", "text": "courier receipt NG123"})))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, ev) = app.call(Method::GET, &format!("/api/v1/escrows/{id}/events"), Some(&buyer.token), None).await;
+    assert!(ev["decide_after"].is_null(), "{ev}");
+
     let (s, v) = app.decide(&judge, &id, json!({"decision": "refund", "note": "no proof of delivery"})).await;
     assert_eq!((s, v["state"].as_str()), (StatusCode::OK, Some("REFUNDED")), "{v}");
     assert_eq!(app.node.state(&p.hash()), Some(NodeInvoiceState::Canceled));

@@ -595,6 +595,8 @@ async fn the_arbiter_can_release_a_disputed_escrow_to_the_seller() {
     let p = secret(1);
     let e = arbitrated_locked(&f, &p).await;
     f.svc.dispute(&e.id, "seller", "buyer has the goods and will not release", T0 + 10).await.unwrap();
+    // The buyer answers, which ends the arbiter's wait.
+    f.svc.add_note(&e.id, "buyer", "evidence", "I have not received it", T0 + 12).await.unwrap();
 
     // A wrong secret changes nothing.
     let wrong = f.svc.arbitrate(&e.id, "judge", Decision::Release(secret(9)), "", T0 + 20).await;
@@ -628,6 +630,7 @@ async fn the_arbiter_can_refund_a_disputed_escrow_to_the_buyer() {
     let p = secret(1);
     let e = arbitrated_locked(&f, &p).await;
     f.svc.dispute(&e.id, "buyer", "nothing arrived", T0 + 10).await.unwrap();
+    f.svc.add_note(&e.id, "seller", "evidence", "courier receipt NG123", T0 + 12).await.unwrap();
     let done = f.svc.arbitrate(&e.id, "judge", Decision::Refund, "no proof of delivery", T0 + 30).await.unwrap();
     assert_eq!(done.state, EscrowState::Refunded);
     assert_eq!(f.node.state(&p.hash()), Some(NodeInvoiceState::Canceled));
@@ -660,3 +663,61 @@ async fn only_the_arbiter_decides_and_only_a_disputed_escrow_before_the_deadline
     f.svc.tick(T0 + HOUR).await.unwrap();
     assert_eq!(f.svc.get(&e.id).await.unwrap().state, EscrowState::Refunded);
 }
+
+#[test]
+fn the_response_window_is_a_quarter_of_the_time_left_and_never_more_than_an_hour() {
+    use escrow_core::service::{response_window_secs, RESPONSE_WINDOW_MAX_SECS};
+    assert_eq!(RESPONSE_WINDOW_MAX_SECS, 3600);
+    assert_eq!(response_window_secs(0, 400), 100);
+    assert_eq!(response_window_secs(0, 3600), 900);
+    assert_eq!(response_window_secs(0, 14_400), 3600, "a quarter of 4 hours is exactly the cap");
+    assert_eq!(response_window_secs(0, 21_600), 3600, "capped at an hour");
+    assert_eq!(response_window_secs(100, 100), 0, "no time left, no window");
+    assert_eq!(response_window_secs(200, 100), 0, "a deadline already passed gives no window");
+}
+
+#[tokio::test]
+async fn an_arbiter_waits_for_the_other_side_to_answer_a_dispute_unless_they_already_have() {
+    let f = fixture();
+    let p = secret(1);
+    let e = arbitrated_locked(&f, &p).await;
+
+    // No dispute, no wait to speak of.
+    assert_eq!(f.svc.decide_after(&e).await.unwrap(), None);
+
+    // The seller disputes at T0+10 with 3590 s left: the buyer has a quarter of that, 897 s.
+    let disputed = f.svc.dispute(&e.id, "seller", "buyer has the goods", T0 + 10).await.unwrap();
+    assert_eq!(f.svc.decide_after(&disputed).await.unwrap(), Some(T0 + 10 + 897));
+
+    // The seller's own notes do not end the buyer's window.
+    f.svc.add_note(&e.id, "seller", "evidence", "tracking NG123", T0 + 20).await.unwrap();
+    assert_eq!(f.svc.decide_after(&disputed).await.unwrap(), Some(T0 + 907));
+
+    // Deciding early is refused, with the time it opens, and leaves nothing on the record.
+    let early = f.svc.arbitrate(&e.id, "judge", Decision::Refund, "", T0 + 906).await;
+    assert!(matches!(early, Err(ServiceError::TooEarly(t)) if t == T0 + 907), "{early:?}");
+    assert_eq!(f.svc.get(&e.id).await.unwrap().state, EscrowState::Disputed);
+    assert_eq!(f.svc.audit_log(&e.id).await.unwrap().iter().filter(|a| a.action == "arbiter_decision").count(), 0);
+
+    // The buyer answering ends the wait at once, even though the clock has not moved.
+    f.svc.add_note(&e.id, "buyer", "evidence", "the box was empty", T0 + 30).await.unwrap();
+    assert_eq!(f.svc.decide_after(&disputed).await.unwrap(), None);
+    assert!(f.svc.arbitrate(&e.id, "judge", Decision::Refund, "box was empty", T0 + 31).await.is_ok());
+}
+
+#[tokio::test]
+async fn a_silent_other_side_cannot_hold_the_decision_past_the_window_or_the_deadline() {
+    let f = fixture();
+    let e = arbitrated_locked(&f, &secret(1)).await;
+    f.svc.dispute(&e.id, "buyer", "nothing arrived", T0 + 10).await.unwrap();
+    // Silence: at the end of the window the arbiter may decide.
+    assert!(f.svc.arbitrate(&e.id, "judge", Decision::Refund, "seller never answered", T0 + 907).await.is_ok());
+
+    // The window always ends before the deadline, so there is time left to decide.
+    let g = fixture();
+    let e = arbitrated_locked(&g, &secret(2)).await;
+    g.svc.dispute(&e.id, "buyer", "nothing arrived", T0 + 3000).await.unwrap();
+    let at = g.svc.decide_after(&g.svc.get(&e.id).await.unwrap()).await.unwrap().unwrap();
+    assert!(at < T0 + HOUR, "{at} is before the deadline {}", T0 + HOUR);
+}
+

@@ -186,6 +186,12 @@ test.describe("scene 3: a dispute, decided by a trusted arbiter", () => {
     await shot(arbiter, "3d-arbiter-dispute");
     stamp("dispute opened");
 
+    // The customer has a short time to answer; saying their side ends the arbiter's wait at once.
+    await customer.page.getByLabel("Your note").fill("The parcel was left with a neighbour, I was not home.");
+    await customer.page.getByRole("button", { name: "Add evidence" }).click();
+    await expect(arbiter.page.getByRole("button", { name: "Release to the seller" })).toBeEnabled();
+    stamp("customer answered");
+
     await arbiter.page.getByLabel("Your note").fill("Signed delivery note matches. Releasing to the courier.");
     await arbiter.page.getByRole("button", { name: "Release to the seller" }).click();
     await arbiter.page.getByRole("button", { name: "Yes, pay the seller" }).click();
