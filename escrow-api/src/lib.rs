@@ -4,6 +4,7 @@
 //! parties, validate input, and call the escrow service, whose state comes from the node.
 
 pub mod arbiter;
+pub mod clientip;
 pub mod auth;
 pub mod checkout;
 pub mod error;
@@ -63,6 +64,10 @@ pub struct ApiConfig {
     /// seconds. It stops someone with only a stolen sign-in from setting a PIN and emptying a balance
     /// before the owner notices.
     pub pin_cooloff_secs: i64,
+    /// Reverse proxies in front of the server whose `X-Forwarded-For` is believed, so rate limits see
+    /// each real client and not the proxy. None by default, which is safe but means everyone behind a
+    /// proxy shares one limit: set it to your reverse proxy's address in production.
+    pub trusted_proxies: clientip::TrustedProxies,
 }
 
 impl Default for ApiConfig {
@@ -76,6 +81,7 @@ impl Default for ApiConfig {
             web_base_url: None,
             platform_arbiter_id: None,
             pin_cooloff_secs: 24 * 3600,
+            trusted_proxies: clientip::TrustedProxies::default(),
         }
     }
 }
@@ -190,10 +196,12 @@ where
     A: NodeDirectory + 'static,
     S: Store + UserStore + Clone + 'static,
 {
+    // The real client when the request came through a trusted proxy; otherwise the connection's own address.
+    let forwarded = req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok());
     let ip = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|c| c.0.ip().to_string())
+        .map(|c| clientip::client_ip(c.0.ip(), forwarded, &st.config.trusted_proxies).to_string())
         .unwrap_or_else(|| "unknown".into());
     let is_register = req.uri().path() == "/api/v1/users";
     let (key, limit) = if is_register {
@@ -235,6 +243,9 @@ where
     };
     Router::new()
         .route("/health", get(routes::health::<A, S>))
+        // Is the process up? Unlike `/health` it does not ask the Lightning node, so a platform that
+        // restarts a service when its health check fails will not restart it over a node outage.
+        .route("/livez", get(|| async { "ok" }))
         .route("/api/v1/users", post(routes::register::<A, S>))
         .route("/api/v1/me", get(routes::me))
         .route("/api/v1/rates", get(routes::rates_list::<A, S>))

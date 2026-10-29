@@ -29,6 +29,12 @@
 //!   CORS_ORIGINS     comma-separated browser origins (default http://localhost:3001,http://127.0.0.1:3001)
 //!   PUBLIC_WEB_URL   the web app's public address (for example https://pay.example.com); with it the API
 //!                    returns a checkout link for each escrow. Off by default.
+//!   MAX_ESCROW_SATS  the most one escrow may be for (default 1000000); lower it while you are starting out
+//!   PIN_COOLOFF_HOURS how long a new or changed withdrawal PIN waits before it works (default 24)
+//!   TRUSTED_PROXIES  reverse proxies whose X-Forwarded-For is believed, as comma-separated addresses or
+//!                    ranges (for example 127.0.0.1,10.0.0.0/8). Default none. Set it in production so
+//!                    rate limits see each real client; send /api/v1/* from that proxy straight to this
+//!                    server (the web app's own proxy does not pass the client's address on)
 //!   RUST_LOG         log filter (default info)
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
@@ -222,7 +228,12 @@ where
             .ok()
             .map(|u| u.trim().trim_end_matches('/').to_string())
             .filter(|u| u.starts_with("https://") || u.starts_with("http://")),
+        max_amount_sats: u64::from(limit("MAX_ESCROW_SATS", 1_000_000)),
         pin_cooloff_secs: limit("PIN_COOLOFF_HOURS", 24) as i64 * 3600,
+        trusted_proxies: escrow_api::clientip::TrustedProxies::parse(&env("TRUSTED_PROXIES", Some(""))).unwrap_or_else(|e| {
+            eprintln!("TRUSTED_PROXIES: {e}");
+            std::process::exit(2);
+        }),
         platform_arbiter_id: std::env::var("PLATFORM_ARBITER_ID").ok().map(|a| a.trim().to_string()).filter(|a| !a.is_empty()),
         ..ApiConfig::default()
     };

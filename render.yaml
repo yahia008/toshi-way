@@ -1,0 +1,131 @@
+# Render Blueprint for toshi-way: the API server, the web app and their Postgres database.
+#
+# The Lightning node is NOT here. It needs a disk that is never rolled back and peers that can reach
+# it, which a Render service does not give. The API server connects to a node you run or rent
+# elsewhere, using the LND_* settings below. Read docs/deploy-render.md before the first deploy.
+#
+# Settings marked `sync: false` have no value here: Render asks for them when the Blueprint is first
+# created. Several of them (the web address, the API address, the node's keys) are only known after
+# the services exist, so expect to fill some in and deploy a second time. The guide has the order.
+
+databases:
+  - name: toshi-db
+    # A small plan is enough to rehearse on a test network. Use a larger one, with backups, for
+    # real money. The free plan expires, so do not use it. Region and name cannot be changed later.
+    plan: 0.1c-256mb
+    region: frankfurt
+    databaseName: toshi
+    user: toshi
+    postgresMajorVersion: "17"
+
+services:
+  # ---------------------------------------------------------------------------------------------
+  # The API server: escrows, accounts, withdrawals, webhooks. Talks to Postgres and to your node.
+  - type: web
+    name: toshi-api
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    dockerfilePath: ./deploy/api.Dockerfile
+    dockerContext: .
+    # `/livez` says the process is up. `/health` also asks the Lightning node, so a node outage
+    # would make Render restart a perfectly good server.
+    healthCheckPath: /livez
+    # Money is involved: deploy by hand, after looking at what changed.
+    autoDeployTrigger: "off"
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: RUST_LOG
+        value: info
+
+      # --- Storage ---------------------------------------------------------------------------
+      # The internal address only: the server's database client cannot do TLS, and an internal
+      # connection never leaves Render's private network.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: toshi-db
+          property: connectionString
+
+      # --- Secrets you must keep ---------------------------------------------------------------
+      # The operator's sign-in token. Generated once; read it in the dashboard.
+      - key: OPERATOR_TOKEN
+        generateValue: true
+      # 64 hex characters: `openssl rand -hex 32`. Seals sellers' stored node credentials and webhook
+      # secrets. BACK IT UP somewhere safe: if it is lost, those cannot be opened again.
+      - key: NODE_CREDENTIAL_KEY
+        sync: false
+
+      # --- The Lightning node ("the shared node") ----------------------------------------------
+      - key: SHARED_NODE
+        value: "on"
+      # https://host:10009, the node's gRPC address.
+      - key: LND_ADDR
+        sync: false
+      # base64 of the node's tls.cert:           base64 -w0 tls.cert
+      - key: LND_TLS_CERT_B64
+        sync: false
+      # base64 of a macaroon limited to invoices: base64 -w0 toshi.macaroon
+      - key: LND_MACAROON_B64
+        sync: false
+      # base64 of a macaroon that may also pay, so sellers can withdraw. Leave empty to offer no balances.
+      - key: PAYOUT_MACAROON_B64
+        sync: false
+
+      # --- Where the web app lives -------------------------------------------------------------
+      # The web app's address, for example https://app.example.com. Allows the browser to call the API.
+      - key: CORS_ORIGINS
+        sync: false
+      # The same address; lets the API hand a business a checkout link.
+      - key: PUBLIC_WEB_URL
+        sync: false
+      # Leave empty. Render's proxy cannot be trusted to tell us who a visitor is (see the guide), so
+      # visitors share one rate limit and the sign-up limit below is a limit for everyone together.
+      - key: TRUSTED_PROXIES
+        value: ""
+
+      # --- Launch limits: start small and raise them as you learn ------------------------------
+      - key: MAX_ESCROW_SATS
+        value: "50000"
+      - key: WITHDRAW_LIMIT_SATS
+        value: "100000"
+      - key: PIN_COOLOFF_HOURS
+        value: "24"
+      - key: NAIRA_HOLD_HOURS
+        value: "24"
+      - key: REGISTER_LIMIT_PER_MIN
+        value: "60"
+      - key: RATE_LIMIT_PER_MIN
+        value: "120"
+
+      # --- Off at launch -----------------------------------------------------------------------
+      # No fiat ramp until a real provider is connected. The built-in demo one refuses to run on mainnet.
+      - key: RAMP_PROVIDER
+        value: "off"
+      - key: FIAT_PROVIDER
+        value: "off"
+      # An account that acts as arbiter when a seller names none (optional; see docs/flow.md).
+      - key: PLATFORM_ARBITER_ID
+        sync: false
+
+  # ---------------------------------------------------------------------------------------------
+  # The web app. It calls the API directly from the browser.
+  - type: web
+    name: toshi-web
+    runtime: docker
+    region: frankfurt
+    plan: 0.5c-512mb
+    dockerfilePath: ./deploy/web.Dockerfile
+    dockerContext: .
+    healthCheckPath: /
+    autoDeployTrigger: "off"
+    envVars:
+      - key: PORT
+        value: "10000"
+      # The API's public address, for example https://api.example.com. Written into the pages when they
+      # are BUILT, so after changing it, deploy the web app again.
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+      # This web app's public address; used for the links people share with each other.
+      - key: NEXT_PUBLIC_APP_URL
+        sync: false

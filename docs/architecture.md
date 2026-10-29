@@ -129,7 +129,7 @@ Handlers in [`routes.rs`](../escrow-api/src/routes.rs) and [`money.rs`](../escro
 
 - **Authentication** ([`auth.rs`](../escrow-api/src/auth.rs)). Three credentials: an *account token* (`tw_…`, stored only as a hash), an *API key* (`tk_…`, scoped `escrows:read` / `escrows:write`, revocable, can never touch the node, account, webhooks or anything a buyer or arbiter does), and the *operator token* from the environment.
 - **Parties.** For each escrow the caller is a `Buyer`, `Seller`, `Arbiter` or `Operator`; what they may do follows from that. A stranger gets `404`, not `403`, so an escrow's existence is not leaked.
-- **Rate limiting** ([`ratelimit.rs`](../escrow-api/src/ratelimit.rs)), per caller (or per address when anonymous), with a stricter limit on sign-ups.
+- **Rate limiting** ([`ratelimit.rs`](../escrow-api/src/ratelimit.rs)), per caller (or per address when anonymous), with a stricter limit on sign-ups. The address is the connection's own unless the connection comes from a `TRUSTED_PROXIES` proxy, in which case it is read from `X-Forwarded-For` from the right, skipping trusted hops ([`clientip.rs`](../escrow-api/src/clientip.rs)). In production a reverse proxy should send `/api/v1/*` straight to the server: the Next.js rewrite does not pass the client's address on, so behind it everyone shares one limit.
 - **Idempotency.** `POST /escrows` honours an `Idempotency-Key`; the cache is in memory and forgets on restart.
 - **Errors** are `{ "error": { "code", "message" } }`; clients branch on `code`.
 
@@ -224,6 +224,7 @@ A small ES-module client with no dependencies (Node 18+): `Toshi` (`create`, `ge
 | `PUBLIC_WEB_URL` | The web app's public address, so the API can return `checkout_url`. |
 | `PLATFORM_ARBITER_ID` | An account that acts as arbiter when a seller names none. |
 | `RATE_LIMIT_PER_MIN`, `REGISTER_LIMIT_PER_MIN`, `CORS_ORIGINS` | Request limits and allowed browser origins. |
+| `TRUSTED_PROXIES` | Reverse proxies whose `X-Forwarded-For` is believed (addresses or ranges, comma-separated). Default none. In production set it to your reverse proxy so rate limits see each real client instead of one shared address. |
 
 Web app: `NEXT_PUBLIC_API_URL`, `API_PROXY_TARGET`, `DEMO_WALLET_TARGET`, `NEXT_PUBLIC_DEMO_WALLET_URL`, `NEXT_PUBLIC_APP_URL`.
 
