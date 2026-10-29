@@ -8,6 +8,7 @@ pub mod auth;
 pub mod checkout;
 pub mod error;
 pub mod money;
+pub mod pin;
 pub mod ratelimit;
 pub mod rates;
 pub mod routes;
@@ -257,6 +258,7 @@ where
         .route("/api/v1/me/balance", get(money::balance::<A, S>))
         .route("/api/v1/me/withdrawals", get(money::withdrawal_list::<A, S>).post(money::withdrawal_create::<A, S>))
         .route("/api/v1/me/withdrawals/{id}", get(money::withdrawal_get::<A, S>))
+        .route("/api/v1/me/withdrawal-pin", get(money::pin_get::<A, S>).put(money::pin_set::<A, S>))
         .route("/api/v1/ramp", get(money::ramp_info::<A, S>))
         .route("/api/v1/ramp/resolve", post(money::ramp_resolve::<A, S>))
         .route("/api/v1/ramp/quote", post(money::ramp_quote::<A, S>))

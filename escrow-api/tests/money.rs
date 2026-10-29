@@ -17,7 +17,7 @@ use escrow_core::{
     payout::{PaymentStatus, PayoutService},
     ramp::{DemoRamp, RampConfig, RampService},
     service::EscrowService,
-    store::MemoryStore,
+    store::{MemoryStore, PayoutStore},
     timing::TimingConfig,
 };
 use http_body_util::BodyExt;
@@ -25,10 +25,13 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 const T0: i64 = 1_000_000;
+/// A withdrawal PIN for the tests' sellers.
+const PIN: &str = "482915";
 const OPERATOR_TOKEN: &str = "operator-token-for-tests-0123456789";
 
 struct App {
     router: Router,
+    store: Arc<MemoryStore>,
     node: MockLightning,
     service: Arc<EscrowService<MockLightning, Arc<MemoryStore>>>,
     payouts: Option<Arc<PayoutService<Arc<MemoryStore>>>>,
@@ -70,7 +73,7 @@ async fn app(money: bool) -> App {
         state = state.with_payouts(p.clone()).with_ramp(r.clone());
         (payouts, ramp) = (Some(p), Some(r));
     }
-    App { router: router(state), node, service, payouts, ramp, shared, ramp_wallet, clock }
+    App { router: router(state), store, node, service, payouts, ramp, shared, ramp_wallet, clock }
 }
 
 impl App {
@@ -92,6 +95,11 @@ impl App {
         let status = res.status();
         let bytes = res.into_body().collect().await.unwrap().to_bytes();
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    async fn set_pin(&self, who: &Account) {
+        let (s, v) = self.call(Method::PUT, "/api/v1/me/withdrawal-pin", Some(&who.token), Some(json!({"pin": PIN}))).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
     }
 
     async fn register(&self) -> Account {
@@ -155,7 +163,7 @@ async fn without_a_payout_node_there_are_no_balances_or_ramp() {
     assert_eq!((s, v), (StatusCode::OK, json!({"payouts": false})));
     let (s, v) = app.call(Method::GET, "/api/v1/ramp", Some(&seller.token), None).await;
     assert_eq!((s, v), (StatusCode::OK, json!({"enabled": false})));
-    let (s, v) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(json!({"invoice": "lnbcrt1"}))).await;
+    let (s, v) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(json!({"invoice": "lnbcrt1", "pin": PIN}))).await;
     assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::CONFLICT, Some("payouts_unavailable")));
 }
 
@@ -164,6 +172,7 @@ async fn a_seller_sees_their_balance_and_withdraws_it_over_lightning() {
     let app = app(true).await;
     let (seller, buyer) = (app.register().await, app.register().await);
     app.earn(&seller, &buyer, 20_000, 1).await;
+    app.set_pin(&seller).await;
 
     let (s, b) = app.call(Method::GET, "/api/v1/me/balance", Some(&seller.token), None).await;
     assert_eq!(s, StatusCode::OK);
@@ -172,19 +181,19 @@ async fn a_seller_sees_their_balance_and_withdraws_it_over_lightning() {
     assert_eq!(b["available_sats"], 0, "paying earns nothing");
 
     let invoice = app.shared.invoice(12_000, T0 + 3600);
-    let (s, w) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(json!({"invoice": invoice}))).await;
+    let (s, w) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(json!({"invoice": invoice, "pin": PIN}))).await;
     assert_eq!((s, w["state"].as_str(), w["amount_sats"].as_u64()), (StatusCode::CREATED, Some("pending"), Some(12_000)), "{w}");
     let id = w["id"].as_str().unwrap().to_string();
     let (_, b) = app.call(Method::GET, "/api/v1/me/balance", Some(&seller.token), None).await;
     assert_eq!((b["available_sats"].as_u64(), b["held_sats"].as_u64()), (Some(7_880), Some(12_120)));
 
     // Paying the same invoice again, or more than is left, is refused.
-    let (s, v) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(json!({"invoice": invoice}))).await;
+    let (s, v) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(json!({"invoice": invoice, "pin": PIN}))).await;
     assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::CONFLICT, Some("duplicate_invoice")));
     let big = app.shared.invoice(8_000, T0 + 3600);
-    let (s, v) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(json!({"invoice": big}))).await;
+    let (s, v) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(json!({"invoice": big, "pin": PIN}))).await;
     assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::CONFLICT, Some("insufficient_balance")));
-    let (s, v) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(json!({"invoice": "not an invoice"}))).await;
+    let (s, v) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(json!({"invoice": "not an invoice", "pin": PIN}))).await;
     assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::BAD_REQUEST, Some("invalid_invoice")));
 
     // The node reports it paid: the withdrawal succeeds and only the real fee is kept.
@@ -293,13 +302,14 @@ async fn a_seller_withdraws_their_balance_to_a_nigerian_bank() {
     let app = app(true).await;
     let (seller, buyer) = (app.register().await, app.register().await);
     app.earn(&seller, &buyer, 10_000, 1).await;
+    app.set_pin(&seller).await;
 
     let (s, o) = app
         .call(
             Method::POST,
             "/api/v1/ramp/offramp",
             Some(&seller.token),
-            Some(json!({"amount_sats": 6_000, "bank_code": "057", "account_number": "2012345678"})),
+            Some(json!({"amount_sats": 6_000, "bank_code": "057", "account_number": "2012345678", "pin": PIN})),
         )
         .await;
     assert_eq!(s, StatusCode::CREATED, "{o}");
@@ -326,8 +336,68 @@ async fn a_seller_withdraws_their_balance_to_a_nigerian_bank() {
             Method::POST,
             "/api/v1/ramp/offramp",
             Some(&seller.token),
-            Some(json!({"amount_sats": 9_000, "bank_code": "057", "account_number": "2012345678"})),
+            Some(json!({"amount_sats": 9_000, "bank_code": "057", "account_number": "2012345678", "pin": PIN})),
         )
         .await;
     assert_eq!((s, v["error"]["code"].as_str()), (StatusCode::CONFLICT, Some("insufficient_balance")));
+}
+
+#[tokio::test]
+async fn withdrawals_need_the_pin_and_wrong_guesses_lock_it() {
+    let app = app(true).await;
+    let (seller, buyer) = (app.register().await, app.register().await);
+    app.earn(&seller, &buyer, 20_000, 1).await;
+    let (a, token) = (&app, seller.token.clone());
+    let withdraw = |pin: &'static str| {
+        let (invoice, token) = (a.shared.invoice(1_000, T0 + 3600), token.clone());
+        async move { a.call(Method::POST, "/api/v1/me/withdrawals", Some(&token), Some(json!({"invoice": invoice, "pin": pin}))).await }
+    };
+    let code = |v: &Value| v["error"]["code"].as_str().unwrap_or_default().to_string();
+
+    // A stolen token alone is not enough: with no PIN set, nothing can be withdrawn.
+    let (s, v) = withdraw("482915").await;
+    assert_eq!((s, code(&v)), (StatusCode::CONFLICT, "pin_not_set".into()));
+    let (_, v) = app.call(Method::GET, "/api/v1/me/withdrawal-pin", Some(&seller.token), None).await;
+    assert_eq!(v["set"], false);
+
+    // Easy PINs are refused; a good one is kept only as a hash.
+    for easy in ["123456", "000000", "12345"] {
+        let (s, v) = app.call(Method::PUT, "/api/v1/me/withdrawal-pin", Some(&seller.token), Some(json!({"pin": easy}))).await;
+        assert_eq!((s, code(&v)), (StatusCode::BAD_REQUEST, "invalid_pin".into()), "{easy}");
+    }
+    app.set_pin(&seller).await;
+    let stored = app.store.get_withdrawal_pin(&seller.id).await.unwrap().unwrap();
+    assert!(stored.pin_hash.starts_with("$argon2") && !stored.pin_hash.contains(PIN));
+
+    // Missing or wrong: refused, and wrong guesses are counted down.
+    let (s, v) = app.call(Method::POST, "/api/v1/me/withdrawals", Some(&seller.token), Some(json!({"invoice": app.shared.invoice(1_000, T0 + 3600)}))).await;
+    assert_eq!((s, code(&v)), (StatusCode::BAD_REQUEST, "pin_required".into()));
+    let (s, v) = withdraw("111112").await;
+    assert_eq!((s, code(&v)), (StatusCode::FORBIDDEN, "wrong_pin".into()));
+    assert!(v["error"]["message"].as_str().unwrap().contains("4 tries left"), "{v}");
+    // A right one works and forgets the wrong guesses.
+    let (s, v) = withdraw("482915").await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+
+    // Five wrong in a row lock it, even against the right PIN, until the lock runs out.
+    for _ in 0..5 {
+        withdraw("111112").await;
+    }
+    let (s, v) = withdraw("482915").await;
+    assert_eq!((s, code(&v)), (StatusCode::FORBIDDEN, "pin_locked".into()));
+    let (_, v) = app.call(Method::GET, "/api/v1/me/withdrawal-pin", Some(&seller.token), None).await;
+    assert!(v["locked_until"].is_i64());
+    app.clock.fetch_add(escrow_api::pin::LOCK_SECS, Ordering::SeqCst);
+    let (s, v) = withdraw("482915").await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+
+    // Changing it needs the current one.
+    let (s, v) = app.call(Method::PUT, "/api/v1/me/withdrawal-pin", Some(&seller.token), Some(json!({"pin": "905173"}))).await;
+    assert_eq!((s, code(&v)), (StatusCode::BAD_REQUEST, "pin_required".into()));
+    let (s, _) = app
+        .call(Method::PUT, "/api/v1/me/withdrawal-pin", Some(&seller.token), Some(json!({"pin": "905173", "current_pin": PIN})))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, v) = withdraw("482915").await;
+    assert_eq!((s, code(&v)), (StatusCode::FORBIDDEN, "wrong_pin".into()));
 }

@@ -288,6 +288,16 @@ export const Balance = z.union([
     payouts: z.literal(true),
     available_sats: z.number().int(),
     earned_sats: z.number().int(),
+    /** Paid in naira and released too recently to withdraw yet. */
+    maturing_sats: z.number().int().default(0),
+    limits: z
+      .object({
+        naira_hold_hours: z.number().int(),
+        window_hours: z.number().int(),
+        window_cap_sats: z.number().int(),
+        left_in_window_sats: z.number().int(),
+      })
+      .optional(),
     /** Set aside for withdrawals still on their way. */
     held_sats: z.number().int(),
     withdrawn_sats: z.number().int(),
@@ -312,6 +322,15 @@ export const Withdrawal = z.object({
 });
 export type Withdrawal = z.infer<typeof Withdrawal>;
 export const WithdrawalList = z.object({ withdrawals: z.array(Withdrawal) });
+
+/** Whether the person has a withdrawal PIN, and until when it is locked after wrong guesses. */
+export const PinStatus = z.object({ set: z.boolean(), locked_until: unixSecs.nullable() });
+export type PinStatus = z.infer<typeof PinStatus>;
+
+export const PinInput = z
+  .string()
+  .trim()
+  .regex(/^\d{6}$/, "The PIN is exactly 6 digits");
 
 export const BankInfo = z.object({ code: z.string(), name: z.string() });
 export type BankInfo = z.infer<typeof BankInfo>;

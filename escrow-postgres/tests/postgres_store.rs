@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use escrow_core::{
+    store::WithdrawalLimits,
     mock::MockLightning,
     model::{AuditEntry, Escrow, Preimage},
     service::{EscrowService, NewEscrow},
@@ -205,7 +206,7 @@ async fn concurrent_withdrawals_cannot_spend_the_same_sats_twice() {
                         failure: None,
                         created_at: T0,
                         updated_at: T0,
-                    })
+                    }, &WithdrawalLimits::NONE)
                     .await
                     .unwrap()
             })
@@ -216,5 +217,5 @@ async fn concurrent_withdrawals_cannot_spend_the_same_sats_twice() {
         accepted += usize::from(t.await.unwrap());
     }
     assert_eq!(accepted, 4);
-    assert_eq!(store.ledger_totals("seller").await.unwrap().available(), 5_000 - 4 * 1_010);
+    assert_eq!(store.ledger_totals("seller", &WithdrawalLimits::NONE).await.unwrap().available(), 5_000 - 4 * 1_010);
 }

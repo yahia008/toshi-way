@@ -16,7 +16,7 @@ use thiserror::Error;
 use crate::{
     adapter::AdapterError,
     model::{PaymentHash, Withdrawal, WithdrawalKind, WithdrawalState},
-    store::{LedgerTotals, PayoutStore, StoreError},
+    store::{LedgerTotals, PayoutStore, StoreError, WithdrawalLimits},
 };
 
 /// What a node makes of a BOLT11 invoice.
@@ -58,6 +58,8 @@ pub enum PayoutError {
     Insufficient { available: u64, needed: u64 },
     #[error("this invoice is already being paid or was paid")]
     Duplicate,
+    #[error("that would pass the withdrawal limit: {left} sats left for the next {hours} hours")]
+    OverLimit { left: u64, hours: i64 },
     #[error("withdrawals are not offered on this server")]
     Disabled,
     #[error("node error: {0}")]
@@ -91,19 +93,57 @@ pub struct PayoutSyncReport {
     pub errors: Vec<(String, String)>,
 }
 
+/// How fast money may leave. Lightning payments cannot be undone, so these slow down someone cashing
+/// out money that can still be reversed, or a balance in the hands of whoever stole a sign-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayoutLimits {
+    /// Sats from an escrow paid in naira wait this long after settling before they can be withdrawn,
+    /// the time in which a bank transfer can still be reversed.
+    pub naira_hold_secs: i64,
+    /// The most a seller may withdraw in any `window_secs`.
+    pub window_cap_sats: u64,
+    pub window_secs: i64,
+}
+
+impl Default for PayoutLimits {
+    fn default() -> Self {
+        Self { naira_hold_secs: 24 * 3600, window_cap_sats: 1_000_000, window_secs: 24 * 3600 }
+    }
+}
+
+impl PayoutLimits {
+    pub fn at(&self, now: i64) -> WithdrawalLimits {
+        WithdrawalLimits {
+            matured_before: now - self.naira_hold_secs,
+            window_from: now - self.window_secs,
+            window_cap_sats: self.window_cap_sats,
+        }
+    }
+}
+
 pub struct PayoutService<S> {
     wallet: Arc<dyn Wallet>,
     store: S,
+    limits: PayoutLimits,
 }
 
 impl<S: PayoutStore> PayoutService<S> {
     /// `wallet` is the node the owed sats sit on: the service's shared node.
     pub fn new(wallet: Arc<dyn Wallet>, store: S) -> Self {
-        Self { wallet, store }
+        Self { wallet, store, limits: PayoutLimits::default() }
     }
 
-    pub async fn balance(&self, user_id: &str) -> Result<LedgerTotals, PayoutError> {
-        Ok(self.store.ledger_totals(user_id).await?)
+    pub fn with_limits(mut self, limits: PayoutLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    pub fn limits(&self) -> PayoutLimits {
+        self.limits
+    }
+
+    pub async fn balance(&self, user_id: &str, now: i64) -> Result<LedgerTotals, PayoutError> {
+        Ok(self.store.ledger_totals(user_id, &self.limits.at(now)).await?)
     }
 
     pub async fn list(&self, user_id: &str) -> Result<Vec<Withdrawal>, PayoutError> {
@@ -154,11 +194,16 @@ impl<S: PayoutStore> PayoutService<S> {
             created_at: now,
             updated_at: now,
         };
-        match self.store.insert_withdrawal(w.clone()).await {
+        let limits = self.limits.at(now);
+        match self.store.insert_withdrawal(w.clone(), &limits).await {
             Ok(true) => {}
             Ok(false) => {
-                let available = self.store.ledger_totals(user_id).await?.available();
-                return Err(PayoutError::Insufficient { available, needed: w.debit() });
+                let t = self.store.ledger_totals(user_id, &limits).await?;
+                if t.withdrawn_in_window_sats + amount > limits.window_cap_sats {
+                    let left = limits.window_cap_sats.saturating_sub(t.withdrawn_in_window_sats);
+                    return Err(PayoutError::OverLimit { left, hours: self.limits.window_secs / 3600 });
+                }
+                return Err(PayoutError::Insufficient { available: t.available(), needed: w.debit() });
             }
             Err(StoreError::Conflict) => return Err(PayoutError::Duplicate),
             Err(e) => return Err(e.into()),

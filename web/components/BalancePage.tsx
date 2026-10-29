@@ -4,12 +4,14 @@ import Link from "next/link";
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api, describeError } from "@/lib/api";
 import { formatLocalTime, formatSats } from "@/lib/clock";
-import type {
-  Balance,
-  NodeInfo,
-  RampInfo,
-  RampOrder,
-  Withdrawal,
+import {
+  PinInput,
+  type Balance,
+  type NodeInfo,
+  type PinStatus,
+  type RampInfo,
+  type RampOrder,
+  type Withdrawal,
 } from "@/lib/schemas";
 import { useSession } from "@/lib/session";
 import { SignIn } from "./Account";
@@ -47,14 +49,41 @@ function feeAllowance(sats: number, b: Payable): number {
   );
 }
 
-/** The most that can be withdrawn in one go, leaving room for the fee allowance. */
+/** The most that can be withdrawn in one go: room for the fee allowance, and within the daily limit. */
 function maxWithdrawal(b: Payable): number {
   let a = Math.floor(
     (b.available_sats * 100) / (100 + b.fee_allowance.percent),
   );
   while (a > 0 && a + feeAllowance(a, b) > b.available_sats) a--;
   while (a + 1 + feeAllowance(a + 1, b) <= b.available_sats) a++;
-  return Math.max(0, a);
+  return Math.max(0, Math.min(a, b.limits?.left_in_window_sats ?? a));
+}
+
+/** The withdrawal PIN, asked for on every withdrawal. Typed into a password field, never stored. */
+function PinField({
+  value,
+  onChange,
+  label = "Withdrawal PIN",
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  label?: string;
+}) {
+  return (
+    <Field label={label}>
+      <input
+        type="password"
+        value={value}
+        onChange={(e) =>
+          onChange(e.target.value.replace(/\D/g, "").slice(0, 6))
+        }
+        inputMode="numeric"
+        autoComplete="off"
+        placeholder="••••••"
+        className={`${inputClass} w-40 font-mono tracking-[0.4em]`}
+      />
+    </Field>
+  );
 }
 
 /**
@@ -68,6 +97,7 @@ export function BalancePage() {
   const [orders, setOrders] = useState<RampOrder[]>([]);
   const [ramp, setRamp] = useState<RampInfo | null>(null);
   const [node, setNode] = useState<NodeInfo | null>(null);
+  const [pin, setPin] = useState<PinStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -98,6 +128,10 @@ export function BalancePage() {
     api
       .node()
       .then(setNode)
+      .catch(() => {});
+    api
+      .withdrawalPin()
+      .then(setPin)
       .catch(() => {});
   }, [signedIn, load]);
 
@@ -143,7 +177,10 @@ export function BalancePage() {
             </Notice>
           )}
           <Totals balance={balance} />
-          <WithdrawCard balance={balance} ramp={ramp} onDone={load} />
+          {pin && <PinCard pin={pin} onChange={setPin} />}
+          {pin?.set && (
+            <WithdrawCard balance={balance} ramp={ramp} onDone={load} />
+          )}
           <History withdrawals={withdrawals} orders={orders} />
         </>
       )}
@@ -154,9 +191,13 @@ export function BalancePage() {
 function Totals({ balance }: { balance: Payable }) {
   const rows = [
     { label: "Earned", value: balance.earned_sats },
+    ...(balance.maturing_sats > 0
+      ? [{ label: "Maturing", value: balance.maturing_sats }]
+      : []),
     { label: "On the way", value: balance.held_sats },
     { label: "Withdrawn", value: balance.withdrawn_sats },
   ];
+  const limits = balance.limits;
   return (
     <section className="rounded-2xl bg-neutral-950 p-6 text-white shadow-sm dark:bg-neutral-900">
       <div className="text-xs font-semibold uppercase tracking-[0.12em] text-amber-400">
@@ -165,7 +206,9 @@ function Totals({ balance }: { balance: Payable }) {
       <div className="mt-2 text-4xl font-bold tabular-nums">
         {formatSats(balance.available_sats)}
       </div>
-      <dl className="mt-5 grid grid-cols-3 gap-4 border-t border-white/10 pt-4">
+      <dl
+        className={`mt-5 grid gap-4 border-t border-white/10 pt-4 ${rows.length > 3 ? "grid-cols-2 sm:grid-cols-4" : "grid-cols-3"}`}
+      >
         {rows.map((r) => (
           <div key={r.label}>
             <dt className="text-xs text-neutral-400">{r.label}</dt>
@@ -175,7 +218,126 @@ function Totals({ balance }: { balance: Payable }) {
           </div>
         ))}
       </dl>
+      {limits && (
+        <div className="mt-4 space-y-1 text-xs text-neutral-400">
+          {balance.maturing_sats > 0 && (
+            <p>
+              Maturing: paid in naira, so it can be withdrawn{" "}
+              {limits.naira_hold_hours} hours after release, once the bank
+              transfer can no longer be reversed.
+            </p>
+          )}
+          <p>
+            You can withdraw up to {formatSats(limits.window_cap_sats)} in any{" "}
+            {limits.window_hours} hours;{" "}
+            {formatSats(limits.left_in_window_sats)} left now.
+          </p>
+        </div>
+      )}
     </section>
+  );
+}
+
+/** Set the withdrawal PIN (needed before any withdrawal), or change it with the current one. */
+function PinCard({
+  pin,
+  onChange,
+}: {
+  pin: PinStatus;
+  onChange: (p: PinStatus) => void;
+}) {
+  const [open, setOpen] = useState(!pin.set);
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [again, setAgain] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{
+    tone: "success" | "error";
+    text: string;
+  } | null>(null);
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    const parsed = PinInput.safeParse(next);
+    if (!parsed.success)
+      return setMsg({ tone: "error", text: parsed.error.issues[0].message });
+    if (next !== again)
+      return setMsg({ tone: "error", text: "The two PINs don't match." });
+    setBusy(true);
+    setMsg(null);
+    try {
+      onChange(await api.setWithdrawalPin(next, pin.set ? current : undefined));
+      setCurrent("");
+      setNext("");
+      setAgain("");
+      setOpen(false);
+      setMsg({
+        tone: "success",
+        text: pin.set ? "PIN changed." : "PIN set. You can withdraw now.",
+      });
+    } catch (err) {
+      setMsg({ tone: "error", text: describeError(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card title={pin.set ? undefined : "Set a withdrawal PIN"}>
+      {pin.set && !open ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+          <span className="flex items-center gap-2">
+            <span className="size-2 rounded-full bg-emerald-500" />
+            Withdrawals are protected by your PIN.
+          </span>
+          <Button variant="ghost" onClick={() => setOpen(true)}>
+            Change PIN
+          </Button>
+        </div>
+      ) : (
+        <form onSubmit={save} className="space-y-4" noValidate>
+          {!pin.set && (
+            <p className="text-sm text-neutral-600 dark:text-neutral-400">
+              Every withdrawal asks for this 6-digit PIN, so someone who gets
+              hold of your sign-in still can&apos;t take your money. Choose one
+              you don&apos;t use elsewhere, and avoid runs like 123456. It
+              can&apos;t be recovered if you forget it.
+            </p>
+          )}
+          <div className="flex flex-wrap gap-4">
+            {pin.set && (
+              <PinField
+                label="Current PIN"
+                value={current}
+                onChange={setCurrent}
+              />
+            )}
+            <PinField
+              label={pin.set ? "New PIN" : "PIN"}
+              value={next}
+              onChange={setNext}
+            />
+            <PinField label="Repeat it" value={again} onChange={setAgain} />
+          </div>
+          {msg && <Notice tone={msg.tone}>{msg.text}</Notice>}
+          <div className="flex gap-2">
+            <Button type="submit" busy={busy}>
+              {pin.set ? "Change PIN" : "Set PIN"}
+            </Button>
+            {pin.set && (
+              <Button variant="ghost" onClick={() => setOpen(false)}>
+                Cancel
+              </Button>
+            )}
+          </div>
+        </form>
+      )}
+      {pin.set && !open && msg?.tone === "success" && (
+        <div className="mt-3">
+          <Notice tone="success">{msg.text}</Notice>
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -246,6 +408,7 @@ function LightningWithdraw({
   onDone: () => Promise<void>;
 }) {
   const [invoice, setInvoice] = useState("");
+  const [pin, setPin] = useState("");
   const [demoAmount, setDemoAmount] = useState("");
   const [busy, setBusy] = useState<"pay" | "demo" | null>(null);
   const [msg, setMsg] = useState<{
@@ -261,11 +424,17 @@ function LightningWithdraw({
         tone: "error",
         text: "Paste a Lightning invoice from your wallet.",
       });
+    if (pin.length !== 6)
+      return setMsg({
+        tone: "error",
+        text: "Enter your 6-digit withdrawal PIN.",
+      });
     setBusy("pay");
     setMsg(null);
     try {
-      const w = await api.withdraw(invoice);
+      const w = await api.withdraw(invoice, pin);
       setInvoice("");
+      setPin("");
       setMsg({
         tone: "success",
         text:
@@ -346,6 +515,7 @@ function LightningWithdraw({
           </div>
         </details>
       )}
+      <PinField value={pin} onChange={setPin} />
       {msg && <Notice tone={msg.tone}>{msg.text}</Notice>}
       <Button
         type="submit"
@@ -378,6 +548,7 @@ function BankWithdraw({
     resolved: null,
   });
   const [amount, setAmount] = useState("");
+  const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{
     tone: "success" | "error";
@@ -398,8 +569,10 @@ function BankWithdraw({
         sats,
         account.resolved.bank_code,
         account.resolved.account_number,
+        pin,
       );
       setAmount("");
+      setPin("");
       setMsg({
         tone: "success",
         text: `${money(o.fiat_minor, o)} is on its way to ${o.bank.account_name}. Follow it below.`,
@@ -452,11 +625,14 @@ function BankWithdraw({
         <QuoteLines quote={quote} total="You receive" />
       )}
       {quoteError && !tooSmall && <Notice tone="error">{quoteError}</Notice>}
+      <PinField value={pin} onChange={setPin} />
       {msg && <Notice tone={msg.tone}>{msg.text}</Notice>}
       <ConfirmButton
         variant="primary"
         busy={busy}
-        disabled={!account.resolved || !quote || tooSmall || tooBig}
+        disabled={
+          !account.resolved || !quote || tooSmall || tooBig || pin.length !== 6
+        }
         confirmLabel="Yes, send it"
         confirmText={
           quote && account.resolved ? (
@@ -535,7 +711,8 @@ function History({
                     </div>
                     {i.w.failure && (
                       <div className="text-xs text-red-700 first-letter:uppercase dark:text-red-400">
-                        {i.w.failure}. The sats are back in your balance.
+                        {i.w.failure}. The sats are back in your balance; make a
+                        new invoice to try again.
                       </div>
                     )}
                   </div>

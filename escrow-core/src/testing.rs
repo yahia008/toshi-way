@@ -464,11 +464,12 @@ fn ramp_order(id: &str, escrow: Option<&str>, at: i64) -> crate::model::RampOrde
 /// shared-node escrows, a balance check that cannot be raced, and ramp orders that round-trip.
 pub async fn payout_store_contract<S: Store + crate::store::PayoutStore>(store: &S) {
     use crate::{
-        model::{RampState, WithdrawalState as W},
-        store::RampUpdate,
+        model::{BankAccount, RampState, WithdrawalState as W},
+        store::{RampUpdate, WithdrawalLimits},
     };
+    let none = WithdrawalLimits::NONE;
 
-    assert_eq!(store.ledger_totals("seller").await.unwrap().available(), 0);
+    assert_eq!(store.ledger_totals("seller", &none).await.unwrap().available(), 0);
 
     // Only settled escrows on the shared node, where they are the seller, count.
     let mut earned = escrow("earned");
@@ -486,18 +487,18 @@ pub async fn payout_store_contract<S: Store + crate::store::PayoutStore>(store: 
     for e in [earned, own, locked, bought] {
         store.insert(e).await.unwrap();
     }
-    let t = store.ledger_totals("seller").await.unwrap();
+    let t = store.ledger_totals("seller", &none).await.unwrap();
     assert_eq!((t.earned_sats, t.held_sats, t.withdrawn_sats, t.available()), (10_000, 0, 0, 10_000));
 
     // A pending withdrawal holds its amount and fee allowance (9,000 + 90).
-    assert!(store.insert_withdrawal(withdrawal("w1", "seller", 9_000, 1, 200)).await.unwrap());
-    assert_eq!(store.ledger_totals("seller").await.unwrap().available(), 910);
+    assert!(store.insert_withdrawal(withdrawal("w1", "seller", 9_000, 1, 200), &none).await.unwrap());
+    assert_eq!(store.ledger_totals("seller", &none).await.unwrap().available(), 910);
     // More than what is left is refused, and changes nothing.
-    assert!(!store.insert_withdrawal(withdrawal("w2", "seller", 1_000, 2, 201)).await.unwrap());
+    assert!(!store.insert_withdrawal(withdrawal("w2", "seller", 1_000, 2, 201), &none).await.unwrap());
     assert_eq!(store.get_withdrawal("w2").await.unwrap(), None);
     // The same invoice cannot be paid twice, nor the same id reused.
-    assert_eq!(store.insert_withdrawal(withdrawal("w3", "seller", 10, 1, 202)).await, Err(StoreError::Conflict));
-    assert_eq!(store.insert_withdrawal(withdrawal("w1", "seller", 10, 9, 202)).await, Err(StoreError::Conflict));
+    assert_eq!(store.insert_withdrawal(withdrawal("w3", "seller", 10, 1, 202), &none).await, Err(StoreError::Conflict));
+    assert_eq!(store.insert_withdrawal(withdrawal("w1", "seller", 10, 9, 202), &none).await, Err(StoreError::Conflict));
     assert_eq!(store.pending_withdrawals().await.unwrap().len(), 1);
 
     // Success charges the fee actually paid; it can only finish once.
@@ -505,15 +506,17 @@ pub async fn payout_store_contract<S: Store + crate::store::PayoutStore>(store: 
     assert!(!store.finish_withdrawal("w1", W::Failed, None, Some("late".into()), 301).await.unwrap());
     let w1 = store.get_withdrawal("w1").await.unwrap().unwrap();
     assert_eq!((w1.state, w1.fee_sats, w1.updated_at), (W::Succeeded, Some(3), 300));
-    let t = store.ledger_totals("seller").await.unwrap();
+    let t = store.ledger_totals("seller", &none).await.unwrap();
     assert_eq!((t.held_sats, t.withdrawn_sats, t.available()), (0, 9_003, 997));
 
-    // A failure gives the sats back, and the same invoice may then be tried again.
-    assert!(store.insert_withdrawal(withdrawal("w4", "seller", 500, 4, 400)).await.unwrap());
+    // A failure gives the sats back. Its invoice is never paid again: a payment thought failed may
+    // still go through, so a second try would pay twice. The seller makes a new invoice instead.
+    assert!(store.insert_withdrawal(withdrawal("w4", "seller", 500, 4, 400), &none).await.unwrap());
     assert!(store.finish_withdrawal("w4", W::Failed, None, Some("no route".into()), 401).await.unwrap());
     assert_eq!(store.get_withdrawal("w4").await.unwrap().unwrap().failure.as_deref(), Some("no route"));
-    assert_eq!(store.ledger_totals("seller").await.unwrap().available(), 997);
-    assert!(store.insert_withdrawal(withdrawal("w5", "seller", 500, 4, 500)).await.unwrap());
+    assert_eq!(store.ledger_totals("seller", &none).await.unwrap().available(), 997);
+    assert_eq!(store.insert_withdrawal(withdrawal("w5", "seller", 500, 4, 500), &none).await, Err(StoreError::Conflict));
+    assert!(store.insert_withdrawal(withdrawal("w5", "seller", 500, 5, 500), &none).await.unwrap());
     let ids: Vec<String> = store.list_withdrawals("seller").await.unwrap().into_iter().map(|w| w.id).collect();
     assert_eq!(ids, ["w5", "w4", "w1"], "newest first");
     assert!(store.list_withdrawals("buyer").await.unwrap().is_empty());
@@ -530,14 +533,25 @@ pub async fn payout_store_contract<S: Store + crate::store::PayoutStore>(store: 
     assert_eq!(store.insert_ramp_order(ramp_order("r3", Some("earned"), 130)).await, Err(StoreError::Conflict));
 
     // Compare-and-set on the state; the note and reference are kept.
-    let upd = RampUpdate { note: Some("expired".into()), fiat_reference: Some("REF-1".into()) };
+    let upd = RampUpdate { note: Some("expired".into()), fiat_reference: Some("REF-1".into()), refund_to: None };
     assert!(!store.update_ramp_order("r1", RampState::Paying, RampState::Expired, upd.clone(), 140).await.unwrap());
     assert!(store.update_ramp_order("r1", RampState::AwaitingDeposit, RampState::Expired, upd, 140).await.unwrap());
     let r1 = store.get_ramp_order("r1").await.unwrap().unwrap();
     assert_eq!((r1.state, r1.note.as_deref(), r1.fiat_reference.as_deref(), r1.updated_at), (RampState::Expired, Some("expired"), Some("REF-1"), 140));
     let keep = RampUpdate::default();
     assert!(store.update_ramp_order("r2", RampState::SendingSats, RampState::PayingOut, keep, 150).await.unwrap());
-    assert_eq!(store.get_ramp_order("r2").await.unwrap().unwrap().note, None);
+    let r2 = store.get_ramp_order("r2").await.unwrap().unwrap();
+    assert_eq!((r2.note, r2.bank), (None, ramp_order("r2", None, 110).bank), "nothing given, nothing changed");
+    // The account a refund goes to can be replaced (by the one the money really came from).
+    let payer = BankAccount {
+        bank_code: "057".into(),
+        bank_name: "Zenith Bank".into(),
+        account_number: "2099999999".into(),
+        account_name: "PAYER".into(),
+    };
+    let upd = RampUpdate { refund_to: Some(payer.clone()), ..Default::default() };
+    assert!(store.update_ramp_order("r2", RampState::PayingOut, RampState::PayingOut, upd, 155).await.unwrap());
+    assert_eq!(store.get_ramp_order("r2").await.unwrap().unwrap().bank, payer);
 
     // Once the first has ended, the escrow can have a new one, and that is the one found.
     store.insert_ramp_order(ramp_order("r3", Some("earned"), 160)).await.unwrap();
@@ -548,4 +562,63 @@ pub async fn payout_store_contract<S: Store + crate::store::PayoutStore>(store: 
     assert!(open.contains(&"r2".to_string()) && open.contains(&"r3".to_string()));
     let mine: Vec<String> = store.list_ramp_orders("buyer").await.unwrap().into_iter().map(|o| o.id).collect();
     assert_eq!(mine, ["r3", "r2", "r1"]);
+
+    // Sats from an escrow paid in naira are held back until it has been settled for a while.
+    let before = store.ledger_totals("seller", &none).await.unwrap();
+    let mut naira = escrow("naira-paid");
+    naira.state = EscrowState::Settled;
+    naira.amount_sats = 2_000;
+    naira.updated_at = 1_000;
+    store.insert(naira).await.unwrap();
+    store.insert_ramp_order(ramp_order("r9", Some("naira-paid"), 900)).await.unwrap();
+    assert!(store.update_ramp_order("r9", RampState::AwaitingDeposit, RampState::Complete, RampUpdate::default(), 1_000).await.unwrap());
+    let holding = WithdrawalLimits { matured_before: 999, ..none };
+    let t = store.ledger_totals("seller", &holding).await.unwrap();
+    assert_eq!((t.earned_sats, t.maturing_sats, t.available()), (before.earned_sats + 2_000, 2_000, before.available()));
+    let matured = WithdrawalLimits { matured_before: 1_000, ..none };
+    assert_eq!(store.ledger_totals("seller", &matured).await.unwrap().available(), before.available() + 2_000);
+    // Maturing sats cannot be withdrawn.
+    let all = before.available() + 2_000;
+    let big = withdrawal("w6", "seller", all - crate::payout::fee_limit(all) - 1, 6, 1_100);
+    assert!(!store.insert_withdrawal(big.clone(), &holding).await.unwrap());
+    assert!(store.insert_withdrawal(big.clone(), &matured).await.unwrap());
+
+    // Withdrawals since the window opened count towards its cap, however much balance is left; failed
+    // ones don't count.
+    let mut capped = escrow("capped-earnings");
+    capped.state = EscrowState::Settled;
+    capped.seller_id = "capped".into();
+    capped.amount_sats = 10_000;
+    store.insert(capped).await.unwrap();
+    let window = WithdrawalLimits { window_from: 2_000, window_cap_sats: 1_000, ..none };
+    assert!(store.insert_withdrawal(withdrawal("c1", "capped", 900, 7, 2_000), &window).await.unwrap());
+    assert!(!store.insert_withdrawal(withdrawal("c2", "capped", 200, 8, 2_001), &window).await.unwrap());
+    assert_eq!(store.ledger_totals("capped", &window).await.unwrap().withdrawn_in_window_sats, 900);
+    assert!(store.finish_withdrawal("c1", W::Failed, None, Some("no route".into()), 2_002).await.unwrap());
+    assert!(store.insert_withdrawal(withdrawal("c2", "capped", 200, 8, 2_003), &window).await.unwrap());
+    // Earlier withdrawals fall out of the window.
+    let later = WithdrawalLimits { window_from: 2_004, ..window };
+    assert_eq!(store.ledger_totals("capped", &later).await.unwrap().withdrawn_in_window_sats, 0);
+
+    // A withdrawal PIN: set, wrong guesses counted and then locked, a right guess forgets them,
+    // and setting it again starts afresh.
+    assert_eq!(store.get_withdrawal_pin("seller").await.unwrap(), None);
+    store.withdrawal_pin_failed("nobody", 3, 9_000).await.unwrap();
+    store.set_withdrawal_pin("seller", "hash-1", 3_000).await.unwrap();
+    let pin = store.get_withdrawal_pin("seller").await.unwrap().unwrap();
+    assert_eq!((pin.pin_hash.as_str(), pin.failures, pin.locked_until, pin.updated_at), ("hash-1", 0, None, 3_000));
+    store.withdrawal_pin_failed("seller", 3, 9_000).await.unwrap();
+    store.withdrawal_pin_failed("seller", 3, 9_000).await.unwrap();
+    assert_eq!(store.get_withdrawal_pin("seller").await.unwrap().unwrap().locked_until, None);
+    store.withdrawal_pin_failed("seller", 3, 9_000).await.unwrap();
+    let pin = store.get_withdrawal_pin("seller").await.unwrap().unwrap();
+    assert_eq!((pin.failures, pin.locked_until), (3, Some(9_000)));
+    store.withdrawal_pin_ok("seller").await.unwrap();
+    let pin = store.get_withdrawal_pin("seller").await.unwrap().unwrap();
+    assert_eq!((pin.failures, pin.locked_until), (0, None));
+    store.withdrawal_pin_failed("seller", 1, 9_500).await.unwrap();
+    store.set_withdrawal_pin("seller", "hash-2", 3_100).await.unwrap();
+    let pin = store.get_withdrawal_pin("seller").await.unwrap().unwrap();
+    assert_eq!((pin.pin_hash.as_str(), pin.failures, pin.locked_until), ("hash-2", 0, None));
+    assert_eq!(store.get_withdrawal_pin("nobody").await.unwrap(), None);
 }

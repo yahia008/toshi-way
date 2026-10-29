@@ -23,6 +23,9 @@
 //!                    "demo" moves no real money: its Lightning side is RAMP_LND_ADDR (default
 //!                    https://localhost:10001), RAMP_LND_TLS_CERT and RAMP_LND_MACAROON (a payout macaroon).
 //!   RAMP_FEE_BPS     the ramp's fee in hundredths of a percent (default 150, which is 1.5%)
+//!   NAIRA_HOLD_HOURS sats from an escrow paid in naira can be withdrawn this long after it settles
+//!                    (default 24): the time a bank transfer can still be reversed
+//!   WITHDRAW_LIMIT_SATS  the most one seller may withdraw in any 24 hours (default 1000000)
 //!   CORS_ORIGINS     comma-separated browser origins (default http://localhost:3001,http://127.0.0.1:3001)
 //!   PUBLIC_WEB_URL   the web app's public address (for example https://pay.example.com); with it the API
 //!                    returns a checkout link for each escrow. Off by default.
@@ -32,7 +35,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use escrow_api::{ensure_operator, router, ApiConfig, AppState};
 use escrow_core::{
-    payout::{PayoutService, Wallet},
+    payout::{PayoutLimits, PayoutService, Wallet},
     ramp::{DemoRamp, RampConfig, RampService},
     service::EscrowService,
     store::{PayoutStore, Store, UserStore},
@@ -116,6 +119,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Duration::from_secs(10),
             )
             .await?;
+            // The demo takes "I've sent the transfer" on trust and pays with this node's sats. On a
+            // real network that would hand out real money for pretend transfers, so refuse to start.
+            let network = node.network().await?;
+            if network != "regtest" {
+                eprintln!("RAMP_PROVIDER=demo only runs against a regtest node; RAMP_LND_ADDR is on {network}");
+                std::process::exit(2);
+            }
             tracing::warn!("RAMP_PROVIDER=demo: naira payments are pretend (regtest only)");
             Some(Arc::new(node))
         }
@@ -128,7 +138,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("RAMP_FEE_BPS must be a whole number");
         std::process::exit(2);
     });
-    let money = Money { payout_wallet, ramp_wallet, ramp_fee_bps };
+    let number = |name: &str, default: &str| -> u64 {
+        env(name, Some(default)).parse().unwrap_or_else(|_| {
+            eprintln!("{name} must be a whole number");
+            std::process::exit(2);
+        })
+    };
+    let payout_limits = PayoutLimits {
+        naira_hold_secs: number("NAIRA_HOLD_HOURS", "24") as i64 * 3600,
+        window_cap_sats: number("WITHDRAW_LIMIT_SATS", "1000000"),
+        ..PayoutLimits::default()
+    };
+    let money = Money { payout_wallet, ramp_wallet, ramp_fee_bps, payout_limits };
 
     // Sellers' macaroons are encrypted at rest under this key; without it sellers cannot connect nodes.
     let key = match std::env::var("NODE_CREDENTIAL_KEY").ok().filter(|k| !k.is_empty()) {
@@ -162,6 +183,7 @@ struct Money {
     payout_wallet: Option<Arc<dyn Wallet>>,
     ramp_wallet: Option<Arc<dyn Wallet>>,
     ramp_fee_bps: u32,
+    payout_limits: PayoutLimits,
 }
 
 async fn run<S>(
@@ -220,7 +242,8 @@ where
     if let Some(key) = webhook_key {
         state = state.with_webhooks(escrow_api::WebhookSupport { key, sender: webhook_sender });
     }
-    let payouts = money.payout_wallet.map(|w| Arc::new(PayoutService::new(w, store.clone())));
+    let payouts =
+        money.payout_wallet.map(|w| Arc::new(PayoutService::new(w, store.clone()).with_limits(money.payout_limits)));
     let ramp = money.ramp_wallet.map(|w| {
         let config = RampConfig { fee_bps: money.ramp_fee_bps, ..RampConfig::default() };
         if !rates.currencies().contains(&config.currency) {

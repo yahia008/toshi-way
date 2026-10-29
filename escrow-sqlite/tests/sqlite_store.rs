@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use escrow_core::{
+    store::WithdrawalLimits,
     mock::MockLightning,
     model::{NodeInvoiceState, Preimage},
     service::{EscrowService, NewEscrow},
@@ -173,7 +174,7 @@ async fn an_old_database_is_migrated_without_losing_data() {
     drop(store);
     let mut conn = SqliteConnectOptions::new().filename(&path).connect().await.unwrap();
     let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(&mut conn).await.unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 11);
 }
 
 #[tokio::test]
@@ -231,7 +232,7 @@ async fn concurrent_withdrawals_on_a_database_file_cannot_spend_the_same_sats_tw
                         failure: None,
                         created_at: T0,
                         updated_at: T0,
-                    })
+                    }, &WithdrawalLimits::NONE)
                     .await
             })
         })
@@ -244,5 +245,5 @@ async fn concurrent_withdrawals_on_a_database_file_cannot_spend_the_same_sats_tw
         }
     }
     assert!(accepted <= 4, "{accepted} withdrawals were accepted");
-    assert!(store.ledger_totals("seller").await.unwrap().available() >= 5_000 - 4 * 1_010);
+    assert!(store.ledger_totals("seller", &WithdrawalLimits::NONE).await.unwrap().available() >= 5_000 - 4 * 1_010);
 }

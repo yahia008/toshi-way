@@ -280,8 +280,11 @@ impl<S: Store + PayoutStore> RampService<S> {
         }
     }
 
-    /// The provider says the buyer's transfer has arrived. Saying it again changes nothing.
-    pub async fn confirm_deposit(&self, order_id: &str, now: i64) -> Result<RampOrder, RampError> {
+    /// The provider says the buyer's transfer has arrived, from `payer`. Saying it again changes nothing.
+    ///
+    /// A refund always goes back to the account the money came from, never to one the buyer typed:
+    /// otherwise money paid from a stolen account could be "refunded" clean into another.
+    pub async fn confirm_deposit(&self, order_id: &str, payer: &BankAccount, now: i64) -> Result<RampOrder, RampError> {
         let o = self.get(order_id).await?;
         if o.state != RampState::AwaitingDeposit {
             return Ok(o);
@@ -289,8 +292,13 @@ impl<S: Store + PayoutStore> RampService<S> {
         if o.deposit.as_ref().is_some_and(|d| now >= d.expires_at) {
             return Err(RampError::Invalid("this transfer window has closed".into()));
         }
-        let note = RampUpdate { note: Some("transfer received".into()), ..Default::default() };
-        self.store.update_ramp_order(&o.id, RampState::AwaitingDeposit, RampState::DepositReceived, note, now).await?;
+        self.check_bank(payer)?;
+        let update = RampUpdate {
+            note: Some("transfer received".into()),
+            refund_to: Some(payer.clone()),
+            ..Default::default()
+        };
+        self.store.update_ramp_order(&o.id, RampState::AwaitingDeposit, RampState::DepositReceived, update, now).await?;
         self.get(order_id).await
     }
 
@@ -384,7 +392,7 @@ impl<S: Store + PayoutStore> RampService<S> {
             RampState::Refunding => match self.provider.send_fiat(o, o.fiat_minor, FiatPurpose::Refund).await {
                 Ok(reference) => Ok(Some((
                     RampState::Refunded,
-                    RampUpdate { note: Some("money sent back to your bank".into()), fiat_reference: Some(reference) },
+                    RampUpdate { note: Some("money sent back to your bank".into()), fiat_reference: Some(reference), refund_to: None },
                 ))),
                 // A refund owed is never dropped: it is retried until the provider takes it.
                 Err(_) => Ok(None),
@@ -405,7 +413,7 @@ impl<S: Store + PayoutStore> RampService<S> {
             RampState::PayingOut => match self.provider.send_fiat(o, o.fiat_minor, FiatPurpose::Payout).await {
                 Ok(reference) => Ok(Some((
                     RampState::PaidOut,
-                    RampUpdate { note: Some("paid into your bank".into()), fiat_reference: Some(reference) },
+                    RampUpdate { note: Some("paid into your bank".into()), fiat_reference: Some(reference), refund_to: None },
                 ))),
                 // A payout owed is never dropped: it is retried until the provider takes it.
                 Err(_) => Ok(None),

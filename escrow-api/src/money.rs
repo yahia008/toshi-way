@@ -110,11 +110,20 @@ where
     let Some(p) = st.payouts.as_deref() else {
         return Ok(Json(json!({ "payouts": false })));
     };
-    let t = p.balance(&user.id).await?;
+    let t = p.balance(&user.id, (st.now)()).await?;
+    let limits = p.limits();
     Ok(Json(json!({
         "payouts": true,
         "available_sats": t.available(),
         "earned_sats": t.earned_sats,
+        // Paid in naira and settled less than `naira_hold_hours` ago: a bank transfer can still be reversed.
+        "maturing_sats": t.maturing_sats,
+        "limits": {
+            "naira_hold_hours": limits.naira_hold_secs / 3600,
+            "window_hours": limits.window_secs / 3600,
+            "window_cap_sats": limits.window_cap_sats,
+            "left_in_window_sats": limits.window_cap_sats.saturating_sub(t.withdrawn_in_window_sats),
+        },
         "held_sats": t.held_sats,
         "withdrawn_sats": t.withdrawn_sats,
         // The most a withdrawal's routing fee may be: held back while it is paid, only what it cost is kept.
@@ -135,6 +144,7 @@ where
 #[derive(Deserialize)]
 pub struct WithdrawReq {
     invoice: String,
+    pin: Option<String>,
 }
 
 /// Pay a Lightning invoice out of the caller's balance. The invoice names the amount.
@@ -148,7 +158,9 @@ where
     S: Store + UserStore + PayoutStore + Clone + 'static,
 {
     no_operator(&user)?;
-    let w = payouts(&st)?.withdraw(&user.id, &req.invoice, WithdrawalKind::Lightning, (st.now)()).await?;
+    let p = payouts(&st)?;
+    crate::pin::check(&st.users, &user.id, req.pin.as_deref(), (st.now)()).await?;
+    let w = p.withdraw(&user.id, &req.invoice, WithdrawalKind::Lightning, (st.now)()).await?;
     Ok((StatusCode::CREATED, Json(withdrawal_view(&w))))
 }
 
@@ -165,6 +177,46 @@ where
         Some(w) if w.user_id == user.id => Ok(Json(withdrawal_view(&w))),
         _ => Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "no such withdrawal")),
     }
+}
+
+/// Whether the caller has a withdrawal PIN, and whether it is locked.
+pub async fn pin_get<A, S>(State(st): State<AppState<A, S>>, Auth(user): Auth) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + PayoutStore + Clone + 'static,
+{
+    let pin = st.users.get_withdrawal_pin(&user.id).await?;
+    let locked_until = pin.as_ref().and_then(|p| p.locked_until).filter(|&t| t > (st.now)());
+    Ok(Json(json!({ "set": pin.is_some(), "locked_until": locked_until })))
+}
+
+#[derive(Deserialize)]
+pub struct PinReq {
+    pin: String,
+    /// Needed to change a PIN that is already set.
+    current_pin: Option<String>,
+}
+
+/// Set the withdrawal PIN, or change it by giving the current one.
+pub async fn pin_set<A, S>(
+    State(st): State<AppState<A, S>>,
+    Auth(user): Auth,
+    ApiJson(req): ApiJson<PinReq>,
+) -> Result<Json<Value>, ApiError>
+where
+    A: NodeDirectory + 'static,
+    S: Store + UserStore + PayoutStore + Clone + 'static,
+{
+    no_operator(&user)?;
+    let now = (st.now)();
+    let pin = req.pin.trim();
+    crate::pin::validate(pin)?;
+    if st.users.get_withdrawal_pin(&user.id).await?.is_some() {
+        crate::pin::check(&st.users, &user.id, req.current_pin.as_deref(), now).await?;
+    }
+    let hash = crate::pin::hash(pin.to_string()).await?;
+    st.users.set_withdrawal_pin(&user.id, &hash, now).await?;
+    Ok(Json(json!({ "set": true, "locked_until": null })))
 }
 
 // --- Naira ramp -------------------------------------------------------------------------------
@@ -314,6 +366,7 @@ pub struct OfframpReq {
     amount_sats: u64,
     bank_code: String,
     account_number: String,
+    pin: Option<String>,
 }
 
 /// Send part of the caller's balance to their bank account, in naira.
@@ -328,6 +381,7 @@ where
 {
     no_operator(&user)?;
     let r = ramp(&st)?;
+    crate::pin::check(&st.users, &user.id, req.pin.as_deref(), (st.now)()).await?;
     let bank = r.provider().resolve_account(req.bank_code.trim(), req.account_number.trim()).await?;
     let rate = ramp_rate(&st, r).await?;
     let order = r.start_offramp(&user.id, req.amount_sats, bank, rate, (st.now)()).await?;
@@ -385,7 +439,8 @@ where
     if o.direction != RampDirection::On {
         return Err(ApiError::bad_request("invalid_request", "only a naira payment takes a transfer"));
     }
-    Ok(Json(ramp_view(&r.confirm_deposit(&o.id, (st.now)()).await?)))
+    // The pretend transfer comes from the account the buyer named.
+    Ok(Json(ramp_view(&r.confirm_deposit(&o.id, &o.bank, (st.now)()).await?)))
 }
 
 /// Demo provider only: the operator funds an escrow in naira on its buyer's behalf, as if the buyer
@@ -417,7 +472,7 @@ where
     let rate = ramp_rate(&st, r).await?;
     let now = (st.now)();
     let order = r.start_onramp(&buyer, &escrow, bank, rate, now).await?;
-    let order = r.confirm_deposit(&order.id, now).await?;
+    let order = r.confirm_deposit(&order.id, &order.bank, now).await?;
     Ok((StatusCode::CREATED, Json(ramp_view(&order))))
 }
 
@@ -427,6 +482,7 @@ impl From<PayoutError> for ApiError {
             PayoutError::Invalid(m) => ApiError::bad_request("invalid_invoice", m),
             e @ PayoutError::Insufficient { .. } => ApiError::new(StatusCode::CONFLICT, "insufficient_balance", e.to_string()),
             e @ PayoutError::Duplicate => ApiError::new(StatusCode::CONFLICT, "duplicate_invoice", e.to_string()),
+            e @ PayoutError::OverLimit { .. } => ApiError::new(StatusCode::CONFLICT, "withdrawal_limit", e.to_string()),
             PayoutError::Disabled => payouts_unavailable(),
             PayoutError::Adapter(a) => a.into(),
             PayoutError::Store(s) => s.into(),

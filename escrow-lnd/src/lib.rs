@@ -137,6 +137,16 @@ impl LndAdapter {
         Ok(())
     }
 
+    /// The bitcoin network the node runs on, as LND names it: "mainnet", "testnet", "signet", "regtest".
+    pub async fn network(&self) -> Result<String, AdapterError> {
+        let mut client = self.client.clone();
+        let info = self.call(async { client.lightning().get_info(GetInfoRequest {}).await }).await?.into_inner();
+        info.chains
+            .first()
+            .map(|c| c.network.clone())
+            .ok_or_else(|| AdapterError::Unavailable("the node did not say which network it is on".into()))
+    }
+
     /// Wrap a call in the adapter's timeout.
     async fn call<T>(
         &self,

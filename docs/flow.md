@@ -715,6 +715,25 @@ Asked for: sellers should see a balance when funds are released and withdraw it 
 
 ---
 
+## 34. Fraud review, first fixes
+
+A pass over every path that moves money, looking for ways to steal or launder. Found and fixed:
+
+- **The demo provider on a real network would give money away.** It takes "I've sent the transfer" on trust and pays from its node. The server now asks that node which network it is on and refuses to start the demo unless it is regtest.
+- **Refunds went to whatever account the buyer typed.** Money paid in from a stolen account could be cancelled and "refunded" clean into another. `confirm_deposit` now takes the account the transfer came from, and refunds go there (`RampUpdate.refund_to`; new test with a different payer).
+- **A failed withdrawal freed its invoice to be paid again.** If the node had lost track of a payment that then completed, a retry would pay twice. Invoices are now single-use for good (migrations SQLite 010, Postgres 009; contract updated).
+
+Then, agreed with the user:
+
+- **Cash-out of reversible money.** Sats from an escrow paid in naira now mature for 24 hours after release (`NAIRA_HOLD_HOURS`) before they count as available, and any seller may withdraw at most 1,000,000 sats in any 24 hours (`WITHDRAW_LIMIT_SATS`). Both are part of the atomic balance check (`WithdrawalLimits`), so concurrent withdrawals can't slip past them. An escrow settled exactly 24 hours ago is available (a boundary found by the tests).
+- **A stolen token could empty a balance.** The account password only unlocks the token in the browser, so the server can't ask for it. Instead a 6-digit **withdrawal PIN** is required on every withdrawal: Argon2-hashed, easy PINs refused, five wrong guesses lock it for 15 minutes (counted in one SQL step so parallel guesses all count), and changing it needs the current one. Caveat: someone who steals a token before the seller sets a PIN can set one themselves; the Balance page asks for a PIN before showing any way to withdraw, and there is no reset.
+
+Verified: contract tests for the hold, the cap and the PIN on memory, SQLite and Postgres; core tests (naira earnings unavailable until 24 hours after release, the cap and its rolling window); API tests (no PIN, wrong, locked, unlocked after 15 minutes, change needs the current one, the hash is Argon2).
+
+Still open, to decide: buyers who receive goods and then let the escrow refund, and identity checks for bank payouts.
+
+---
+
 ## Next
 
 Try real wallets on a public network (signet). The demo is prepared and rehearsed. Optional extras are all done (WebLN, scanner, Postgres, open-offer links, migrations); a restricted-permission review of production deployment (TLS, reverse proxy and rate-limit addresses) is not. WebLN one-click payment, an in-app QR scanner.

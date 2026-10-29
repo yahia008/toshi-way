@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{
     model::{
-        ApiKey, AuditEntry, AuditRow, Escrow, NodeConnection, NodeEventRecord, NodeKind, PaymentHash, RampOrder, RampState,
+        ApiKey, AuditEntry, AuditRow, BankAccount, Escrow, NodeConnection, NodeEventRecord, NodeKind, PaymentHash, RampOrder, RampState,
         User, Webhook, WebhookProgress, Withdrawal, WithdrawalState,
     },
     state::EscrowState,
@@ -126,6 +126,11 @@ pub trait UserStore: Send + Sync {
 pub struct LedgerTotals {
     /// Sats of settled shared-node escrows where they are the seller.
     pub earned_sats: u64,
+    /// The part of `earned_sats` paid in naira and settled too recently to withdraw. A bank transfer
+    /// can be reversed for a while; sats already sent out over Lightning cannot.
+    pub maturing_sats: u64,
+    /// Sent or being sent in the current limit window (amounts only, failed ones not counted).
+    pub withdrawn_in_window_sats: u64,
     /// Held back for withdrawals still being paid: the amount plus the most the fee can be.
     pub held_sats: u64,
     /// Paid out by withdrawals that went through, fees included.
@@ -134,8 +139,24 @@ pub struct LedgerTotals {
 
 impl LedgerTotals {
     pub fn available(&self) -> u64 {
-        self.earned_sats.saturating_sub(self.held_sats + self.withdrawn_sats)
+        self.earned_sats.saturating_sub(self.maturing_sats + self.held_sats + self.withdrawn_sats)
     }
+}
+
+/// The rules a withdrawal is checked against, as of one moment. Part of the same atomic step as the
+/// balance check, so two withdrawals at once cannot both slip under a limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WithdrawalLimits {
+    /// Naira-paid escrows settled after this time are still maturing.
+    pub matured_before: i64,
+    /// Withdrawals made from this time on count towards `window_cap_sats`.
+    pub window_from: i64,
+    pub window_cap_sats: u64,
+}
+
+impl WithdrawalLimits {
+    /// No holding period and no cap.
+    pub const NONE: Self = Self { matured_before: i64::MIN, window_from: i64::MAX, window_cap_sats: i64::MAX as u64 };
 }
 
 /// What a ramp order's step changes besides its state.
@@ -143,17 +164,20 @@ impl LedgerTotals {
 pub struct RampUpdate {
     pub note: Option<String>,
     pub fiat_reference: Option<String>,
+    /// Replaces the order's bank account: where a refund goes, once the provider says which account
+    /// the money really came from.
+    pub refund_to: Option<BankAccount>,
 }
 
 /// Payouts of the sats the operator owes sellers, and conversions to and from local currency.
 #[async_trait]
 pub trait PayoutStore: Send + Sync {
-    async fn ledger_totals(&self, user_id: &str) -> Result<LedgerTotals, StoreError>;
+    async fn ledger_totals(&self, user_id: &str, limits: &WithdrawalLimits) -> Result<LedgerTotals, StoreError>;
     /// Record a new pending withdrawal, but only if the user's available balance covers its
     /// [`Withdrawal::debit`]. The check and the insert are one atomic step, so two withdrawals at
     /// once cannot both spend the same sats. `Ok(false)` if the balance is too low; `Conflict` if
     /// the id is taken or the same invoice is already being paid or was paid.
-    async fn insert_withdrawal(&self, w: Withdrawal) -> Result<bool, StoreError>;
+    async fn insert_withdrawal(&self, w: Withdrawal, limits: &WithdrawalLimits) -> Result<bool, StoreError>;
     async fn get_withdrawal(&self, id: &str) -> Result<Option<Withdrawal>, StoreError>;
     /// A user's newest 100 withdrawals, newest first.
     async fn list_withdrawals(&self, user_id: &str) -> Result<Vec<Withdrawal>, StoreError>;
@@ -186,6 +210,25 @@ pub trait PayoutStore: Send + Sync {
         update: RampUpdate,
         at: i64,
     ) -> Result<bool, StoreError>;
+
+    async fn get_withdrawal_pin(&self, user_id: &str) -> Result<Option<WithdrawalPin>, StoreError>;
+    /// Set or replace a user's PIN hash, clearing any wrong guesses and lock.
+    async fn set_withdrawal_pin(&self, user_id: &str, pin_hash: &str, at: i64) -> Result<(), StoreError>;
+    /// Count a wrong guess, in one step so guesses made at once are all counted. Once there have been
+    /// `max_failures`, the PIN is locked until `lock_until`.
+    async fn withdrawal_pin_failed(&self, user_id: &str, max_failures: u32, lock_until: i64) -> Result<(), StoreError>;
+    /// A right guess: forget the wrong ones.
+    async fn withdrawal_pin_ok(&self, user_id: &str) -> Result<(), StoreError>;
+}
+
+/// The PIN a seller gives to withdraw: only its hash is kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WithdrawalPin {
+    pub pin_hash: String,
+    /// Wrong guesses since the last right one.
+    pub failures: u32,
+    pub locked_until: Option<i64>,
+    pub updated_at: i64,
 }
 
 #[derive(Default)]
@@ -205,14 +248,18 @@ struct MemoryInner {
     webhooks: Vec<Webhook>,
     withdrawals: Vec<Withdrawal>,
     ramp_orders: Vec<RampOrder>,
+    pins: Vec<(String, WithdrawalPin)>,
 }
 
 impl MemoryInner {
-    fn ledger_totals(&self, user_id: &str) -> LedgerTotals {
+    fn ledger_totals(&self, user_id: &str, limits: &WithdrawalLimits) -> LedgerTotals {
         let mut t = LedgerTotals::default();
         for e in &self.escrows {
             if e.seller_id == user_id && e.node == NodeKind::Shared && e.state == EscrowState::Settled {
                 t.earned_sats += e.amount_sats;
+                if e.updated_at > limits.matured_before && self.paid_in_naira(&e.id) {
+                    t.maturing_sats += e.amount_sats;
+                }
             }
         }
         for w in self.withdrawals.iter().filter(|w| w.user_id == user_id) {
@@ -221,8 +268,19 @@ impl MemoryInner {
                 WithdrawalState::Succeeded => t.withdrawn_sats += w.debit(),
                 WithdrawalState::Failed => {}
             }
+            if w.state != WithdrawalState::Failed && w.created_at >= limits.window_from {
+                t.withdrawn_in_window_sats += w.amount_sats;
+            }
         }
         t
+    }
+
+    /// Whether a naira payment funded this escrow.
+    fn paid_in_naira(&self, escrow_id: &str) -> bool {
+        self.ramp_orders.iter().any(|o| {
+            o.escrow_id.as_deref() == Some(escrow_id)
+                && matches!(o.state, RampState::Paying | RampState::Funded | RampState::Complete)
+        })
     }
 }
 
@@ -664,19 +722,18 @@ impl<S: UserStore + ?Sized> UserStore for std::sync::Arc<S> {
 
 #[async_trait]
 impl PayoutStore for MemoryStore {
-    async fn ledger_totals(&self, user_id: &str) -> Result<LedgerTotals, StoreError> {
-        Ok(self.inner.lock().unwrap().ledger_totals(user_id))
+    async fn ledger_totals(&self, user_id: &str, limits: &WithdrawalLimits) -> Result<LedgerTotals, StoreError> {
+        Ok(self.inner.lock().unwrap().ledger_totals(user_id, limits))
     }
 
-    async fn insert_withdrawal(&self, w: Withdrawal) -> Result<bool, StoreError> {
+    async fn insert_withdrawal(&self, w: Withdrawal, limits: &WithdrawalLimits) -> Result<bool, StoreError> {
         let mut g = self.inner.lock().unwrap();
-        let taken = g.withdrawals.iter().any(|x| {
-            x.id == w.id || (x.payment_hash == w.payment_hash && x.state != WithdrawalState::Failed)
-        });
+        let taken = g.withdrawals.iter().any(|x| x.id == w.id || x.payment_hash == w.payment_hash);
         if taken {
             return Err(StoreError::Conflict);
         }
-        if g.ledger_totals(&w.user_id).available() < w.debit() {
+        let t = g.ledger_totals(&w.user_id, limits);
+        if t.available() < w.debit() || t.withdrawn_in_window_sats + w.amount_sats > limits.window_cap_sats {
             return Ok(false);
         }
         g.withdrawals.push(w);
@@ -788,20 +845,55 @@ impl PayoutStore for MemoryStore {
                 if update.fiat_reference.is_some() {
                     o.fiat_reference = update.fiat_reference;
                 }
+                if let Some(bank) = update.refund_to {
+                    o.bank = bank;
+                }
                 Ok(true)
             }
             None => Ok(false),
         }
     }
+
+    async fn get_withdrawal_pin(&self, user_id: &str) -> Result<Option<WithdrawalPin>, StoreError> {
+        Ok(self.inner.lock().unwrap().pins.iter().find(|(u, _)| u == user_id).map(|(_, p)| p.clone()))
+    }
+
+    async fn set_withdrawal_pin(&self, user_id: &str, pin_hash: &str, at: i64) -> Result<(), StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        g.pins.retain(|(u, _)| u != user_id);
+        let pin = WithdrawalPin { pin_hash: pin_hash.to_string(), failures: 0, locked_until: None, updated_at: at };
+        g.pins.push((user_id.to_string(), pin));
+        Ok(())
+    }
+
+    async fn withdrawal_pin_failed(&self, user_id: &str, max_failures: u32, lock_until: i64) -> Result<(), StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        if let Some((_, p)) = g.pins.iter_mut().find(|(u, _)| u == user_id) {
+            p.failures += 1;
+            if p.failures >= max_failures {
+                p.locked_until = Some(lock_until);
+            }
+        }
+        Ok(())
+    }
+
+    async fn withdrawal_pin_ok(&self, user_id: &str) -> Result<(), StoreError> {
+        let mut g = self.inner.lock().unwrap();
+        if let Some((_, p)) = g.pins.iter_mut().find(|(u, _)| u == user_id) {
+            p.failures = 0;
+            p.locked_until = None;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl<S: PayoutStore + ?Sized> PayoutStore for std::sync::Arc<S> {
-    async fn ledger_totals(&self, user_id: &str) -> Result<LedgerTotals, StoreError> {
-        (**self).ledger_totals(user_id).await
+    async fn ledger_totals(&self, user_id: &str, limits: &WithdrawalLimits) -> Result<LedgerTotals, StoreError> {
+        (**self).ledger_totals(user_id, limits).await
     }
-    async fn insert_withdrawal(&self, w: Withdrawal) -> Result<bool, StoreError> {
-        (**self).insert_withdrawal(w).await
+    async fn insert_withdrawal(&self, w: Withdrawal, limits: &WithdrawalLimits) -> Result<bool, StoreError> {
+        (**self).insert_withdrawal(w, limits).await
     }
     async fn get_withdrawal(&self, id: &str) -> Result<Option<Withdrawal>, StoreError> {
         (**self).get_withdrawal(id).await
@@ -846,6 +938,18 @@ impl<S: PayoutStore + ?Sized> PayoutStore for std::sync::Arc<S> {
         at: i64,
     ) -> Result<bool, StoreError> {
         (**self).update_ramp_order(id, expected, to, update, at).await
+    }
+    async fn get_withdrawal_pin(&self, user_id: &str) -> Result<Option<WithdrawalPin>, StoreError> {
+        (**self).get_withdrawal_pin(user_id).await
+    }
+    async fn set_withdrawal_pin(&self, user_id: &str, pin_hash: &str, at: i64) -> Result<(), StoreError> {
+        (**self).set_withdrawal_pin(user_id, pin_hash, at).await
+    }
+    async fn withdrawal_pin_failed(&self, user_id: &str, max_failures: u32, lock_until: i64) -> Result<(), StoreError> {
+        (**self).withdrawal_pin_failed(user_id, max_failures, lock_until).await
+    }
+    async fn withdrawal_pin_ok(&self, user_id: &str) -> Result<(), StoreError> {
+        (**self).withdrawal_pin_ok(user_id).await
     }
 }
 

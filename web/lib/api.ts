@@ -24,6 +24,7 @@ import {
   Balance,
   Withdrawal,
   WithdrawalList,
+  PinStatus,
   RampInfo,
   ResolvedAccount,
   RampQuote,
@@ -191,7 +192,16 @@ export const api = {
   withdrawals: () => request("GET", "/api/v1/me/withdrawals", WithdrawalList),
 
   /** Pay a Lightning invoice out of your balance; the invoice sets the amount. */
-  withdraw: (invoice: string) => request("POST", "/api/v1/me/withdrawals", Withdrawal, { body: { invoice } }),
+  withdraw: (invoice: string, pin: string) =>
+    request("POST", "/api/v1/me/withdrawals", Withdrawal, { body: { invoice, pin } }),
+
+  withdrawalPin: () => request("GET", "/api/v1/me/withdrawal-pin", PinStatus),
+
+  /** Set the withdrawal PIN; changing one needs the current PIN. */
+  setWithdrawalPin: (pin: string, currentPin?: string) =>
+    request("PUT", "/api/v1/me/withdrawal-pin", PinStatus, {
+      body: currentPin ? { pin, current_pin: currentPin } : { pin },
+    }),
 
   /** Whether paying and getting paid in naira is offered, and to which banks. */
   rampInfo: () => request("GET", "/api/v1/ramp", RampInfo),
@@ -210,8 +220,8 @@ export const api = {
   onramp: (id: string) => request("GET", `${esc(id)}/onramp`, EscrowRampOrder),
 
   /** Send part of your balance to your bank account, in naira. */
-  startOfframp: (amount_sats: number, bank_code: string, account_number: string) =>
-    request("POST", "/api/v1/ramp/offramp", RampOrder, { body: { amount_sats, bank_code, account_number } }),
+  startOfframp: (amount_sats: number, bank_code: string, account_number: string, pin: string) =>
+    request("POST", "/api/v1/ramp/offramp", RampOrder, { body: { amount_sats, bank_code, account_number, pin } }),
 
   rampOrders: () => request("GET", "/api/v1/ramp/orders", RampOrderList),
 
@@ -271,6 +281,15 @@ export function describeError(err: unknown): string {
       return "Your balance doesn't cover that amount plus the routing-fee allowance. Try a smaller amount.";
     case "invalid_invoice":
     case "invalid_request":
+      return sentence(err.message);
+    case "pin_not_set":
+      return "Set a withdrawal PIN first (on this page), then try again.";
+    case "pin_required":
+      return "Enter your withdrawal PIN.";
+    case "wrong_pin":
+    case "pin_locked":
+    case "invalid_pin":
+    case "withdrawal_limit":
       return sentence(err.message);
     case "duplicate_invoice":
       return "That invoice has already been used for a withdrawal. Make a new one.";

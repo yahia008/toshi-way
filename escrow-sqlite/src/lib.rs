@@ -10,7 +10,10 @@ use escrow_core::{
         NodeKind, PaymentHash, RampOrder, RampState, Scope, User, Webhook, WebhookProgress, Withdrawal, WithdrawalState,
     },
     state::EscrowState,
-    store::{EscrowUpdate, LedgerTotals, PayoutStore, RampUpdate, Store, StoreError, UserStore, UserTotals},
+    store::{
+        EscrowUpdate, LedgerTotals, PayoutStore, RampUpdate, Store, StoreError, UserStore, UserTotals, WithdrawalLimits,
+        WithdrawalPin,
+    },
 };
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow},
@@ -29,6 +32,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/007_checkout.sql"),
     include_str!("migrations/008_webhooks.sql"),
     include_str!("migrations/009_payouts.sql"),
+    include_str!("migrations/010_withdrawal_invoice_once.sql"),
+    include_str!("migrations/011_withdrawal_pins.sql"),
 ];
 const ESCROW_COLUMNS: &str = "id, buyer_id, seller_id, arbiter_id, arbiter_key, arbiter_sealed, \
      arbiter_confirmed_at, node, amount_sats, \
@@ -837,30 +842,47 @@ fn ramp_from_row(row: &SqliteRow) -> Result<RampOrder, StoreError> {
 
 /// The balance arithmetic in SQL, for one user bound twice as `?`: earned from settled shared-node
 /// escrows as seller, held by pending withdrawals, and spent by those that went through.
+/// Binds: 1 user, 2 matured-before, 3 window-from.
 const LEDGER_SQL: &str = "SELECT \
      (SELECT COALESCE(SUM(amount_sats), 0) FROM escrows WHERE seller_id = ?1 AND node = 'shared' AND state = 'SETTLED') AS earned, \
+     (SELECT COALESCE(SUM(e.amount_sats), 0) FROM escrows e WHERE e.seller_id = ?1 AND e.node = 'shared' \
+          AND e.state = 'SETTLED' AND e.updated_at > ?2 AND EXISTS (SELECT 1 FROM ramp_orders r \
+          WHERE r.escrow_id = e.id AND r.state IN ('paying', 'funded', 'complete'))) AS maturing, \
      (SELECT COALESCE(SUM(amount_sats + fee_limit_sats), 0) FROM withdrawals WHERE user_id = ?1 AND state = 'pending') AS held, \
-     (SELECT COALESCE(SUM(amount_sats + COALESCE(fee_sats, 0)), 0) FROM withdrawals WHERE user_id = ?1 AND state = 'succeeded') AS spent";
+     (SELECT COALESCE(SUM(amount_sats + COALESCE(fee_sats, 0)), 0) FROM withdrawals WHERE user_id = ?1 AND state = 'succeeded') AS spent, \
+     (SELECT COALESCE(SUM(amount_sats), 0) FROM withdrawals WHERE user_id = ?1 AND state <> 'failed' AND created_at >= ?3) AS in_window";
 
 #[async_trait]
 impl PayoutStore for SqliteStore {
-    async fn ledger_totals(&self, user_id: &str) -> Result<LedgerTotals, StoreError> {
-        let row = sqlx::query(LEDGER_SQL).bind(user_id).fetch_one(&self.pool).await.map_err(backend)?;
+    async fn ledger_totals(&self, user_id: &str, limits: &WithdrawalLimits) -> Result<LedgerTotals, StoreError> {
+        let row = sqlx::query(LEDGER_SQL)
+            .bind(user_id)
+            .bind(limits.matured_before)
+            .bind(limits.window_from)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(backend)?;
+        let get = |c: &str| row.try_get::<i64, _>(c).map(|v| v as u64).map_err(backend);
         Ok(LedgerTotals {
-            earned_sats: row.try_get::<i64, _>("earned").map_err(backend)? as u64,
-            held_sats: row.try_get::<i64, _>("held").map_err(backend)? as u64,
-            withdrawn_sats: row.try_get::<i64, _>("spent").map_err(backend)? as u64,
+            earned_sats: get("earned")?,
+            maturing_sats: get("maturing")?,
+            withdrawn_in_window_sats: get("in_window")?,
+            held_sats: get("held")?,
+            withdrawn_sats: get("spent")?,
         })
     }
 
-    async fn insert_withdrawal(&self, w: Withdrawal) -> Result<bool, StoreError> {
+    async fn insert_withdrawal(&self, w: Withdrawal, limits: &WithdrawalLimits) -> Result<bool, StoreError> {
         // One statement checks the balance and inserts, so SQLite's write lock makes it atomic.
         let res = sqlx::query(&format!(
             "INSERT INTO withdrawals ({WITHDRAWAL_COLUMNS}) \
-             SELECT ?2, ?1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12 \
-             FROM ({LEDGER_SQL}) AS t WHERE t.earned - t.held - t.spent >= ?13"
+             SELECT ?4, ?1, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14 \
+             FROM ({LEDGER_SQL}) AS t \
+             WHERE t.earned - t.maturing - t.held - t.spent >= ?15 AND t.in_window + ?16 <= ?17"
         ))
         .bind(&w.user_id)
+        .bind(limits.matured_before)
+        .bind(limits.window_from)
         .bind(&w.id)
         .bind(w.kind.as_str())
         .bind(w.amount_sats as i64)
@@ -873,6 +895,8 @@ impl PayoutStore for SqliteStore {
         .bind(w.created_at)
         .bind(w.updated_at)
         .bind(w.debit() as i64)
+        .bind(w.amount_sats as i64)
+        .bind(i64::try_from(limits.window_cap_sats).unwrap_or(i64::MAX))
         .execute(&self.pool)
         .await;
         match res {
@@ -1022,17 +1046,69 @@ impl PayoutStore for SqliteStore {
     ) -> Result<bool, StoreError> {
         let res = sqlx::query(
             "UPDATE ramp_orders SET state = ?, updated_at = ?, note = COALESCE(?, note), \
-                 fiat_reference = COALESCE(?, fiat_reference) WHERE id = ? AND state = ?",
+                 fiat_reference = COALESCE(?, fiat_reference), bank_code = COALESCE(?, bank_code), \
+                 bank_name = COALESCE(?, bank_name), account_number = COALESCE(?, account_number), \
+                 account_name = COALESCE(?, account_name) WHERE id = ? AND state = ?",
         )
         .bind(to.as_str())
         .bind(at)
         .bind(&update.note)
         .bind(&update.fiat_reference)
+        .bind(update.refund_to.as_ref().map(|b| &b.bank_code))
+        .bind(update.refund_to.as_ref().map(|b| &b.bank_name))
+        .bind(update.refund_to.as_ref().map(|b| &b.account_number))
+        .bind(update.refund_to.as_ref().map(|b| &b.account_name))
         .bind(id)
         .bind(expected.as_str())
         .execute(&self.pool)
         .await
         .map_err(backend)?;
         Ok(res.rows_affected() == 1)
+    }
+
+    async fn get_withdrawal_pin(&self, user_id: &str) -> Result<Option<WithdrawalPin>, StoreError> {
+        let row = sqlx::query("SELECT pin_hash, failures, locked_until, updated_at FROM withdrawal_pins WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
+        row.map(|r| {
+            Ok(WithdrawalPin {
+                pin_hash: r.try_get("pin_hash").map_err(backend)?,
+                failures: r.try_get::<i64, _>("failures").map_err(backend)? as u32,
+                locked_until: r.try_get("locked_until").map_err(backend)?,
+                updated_at: r.try_get("updated_at").map_err(backend)?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn set_withdrawal_pin(&self, user_id: &str, pin_hash: &str, at: i64) -> Result<(), StoreError> {
+        sqlx::query(
+            "INSERT INTO withdrawal_pins (user_id, pin_hash, failures, locked_until, updated_at) VALUES (?, ?, 0, NULL, ?) ON CONFLICT (user_id) DO UPDATE SET pin_hash = excluded.pin_hash, failures = 0, locked_until = NULL, updated_at = excluded.updated_at",
+        )
+        .bind(user_id)
+        .bind(pin_hash)
+        .bind(at)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    async fn withdrawal_pin_failed(&self, user_id: &str, max_failures: u32, lock_until: i64) -> Result<(), StoreError> {
+        sqlx::query("UPDATE withdrawal_pins SET failures = failures + 1, locked_until = CASE WHEN failures + 1 >= ? THEN ? ELSE locked_until END WHERE user_id = ?")
+            .bind(max_failures as i64)
+            .bind(lock_until)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?;
+        Ok(())
+    }
+
+    async fn withdrawal_pin_ok(&self, user_id: &str) -> Result<(), StoreError> {
+        sqlx::query("UPDATE withdrawal_pins SET failures = 0, locked_until = NULL WHERE user_id = ?").bind(user_id).execute(&self.pool).await.map_err(backend)?;
+        Ok(())
     }
 }
